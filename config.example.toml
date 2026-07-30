@@ -1,0 +1,46 @@
+# Copy this file to ~/.litecoder/config.toml and replace placeholder values.
+# Do not commit real API keys.
+
+default_provider = "anthropic"
+
+[providers.anthropic]
+type = "anthropic-messages"
+model = "your-anthropic-model"
+api_key = "replace-with-your-anthropic-api-key"
+
+[providers.openai]
+type = "openai-chat-completions"
+base_url = "https://api.openai.com/v1"
+model = "your-openai-model"
+api_key = "replace-with-your-openai-api-key"
+
+[providers.responses]
+type = "openai-responses"
+base_url = "https://api.openai.com/v1"
+model = "your-openai-model"
+api_key = "replace-with-your-openai-api-key"
+
+# MCP servers share this file.
+# Uncomment and edit one of the examples below when needed.
+#
+# [mcp_servers.local_docs]
+# transport = "stdio"
+# command = "python"
+# args = ["server.py"]
+#
+# [mcp_servers.remote_docs]
+# transport = "streamable-http"
+# url = "https://example.invalid/mcp"
+
+# External hooks are user-defined commands. Add one [[hooks]] table for each
+# command. Pre-hooks may block: UserPromptSubmit, PreModelCall, PreToolUse,
+# SubagentStart. Post-hooks observe: PostModelCall, PostToolUse, ToolError,
+# AgentStop, SubagentStop.
+#
+# [[hooks]]
+# name = "policy-check"
+# enabled = true
+# point = "PreToolUse"
+# command = "python"
+# args = ["path/to/policy_hook.py"]
+# timeout_seconds = 5
