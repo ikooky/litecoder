@@ -211,7 +211,7 @@ async def test_interactive_entrypoint_runs_textual_app_and_closes_runtime(
             captured["app"] = self
 
         async def run_async(self, **kwargs: object) -> str:
-            assert kwargs == {"inline": True, "inline_no_clear": True}
+            assert kwargs == {}
             assert sys.stdout is not original_stdout
             assert sys.stderr is not original_stderr
             print("hidden third-party stdout")

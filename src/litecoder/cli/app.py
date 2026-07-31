@@ -613,9 +613,7 @@ async def _run_textual(*, session_id: str | None = None) -> None:
             session_id=session_id,
         )
         with TUIOutputGuard():
-            completed_session_id = await textual_app.run_async(
-                inline=True, inline_no_clear=True
-            )
+            completed_session_id = await textual_app.run_async()
         if completed_session_id:
             Console().print(f"session={completed_session_id}", style="yellow")
     finally:

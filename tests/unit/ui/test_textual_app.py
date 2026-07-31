@@ -167,17 +167,17 @@ async def test_unhandled_runtime_error_does_not_expose_exception_text() -> None:
         assert "secret provider traceback detail" not in str(errors[-1])
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows-specific inline driver")
+@pytest.mark.skipif(os.name != "nt", reason="Windows-specific driver")
 @pytest.mark.asyncio
-async def test_textual_app_uses_windows_inline_driver() -> None:
-    from litecoder.ui.windows_inline_driver import WindowsInlineDriver
+async def test_textual_app_uses_standard_windows_driver() -> None:
+    from textual.drivers.windows_driver import WindowsDriver
 
     app, _, _ = build_app()
 
     driver = app._build_driver(headless=False, inline=True, mouse=False, size=(80, 24))
 
-    assert isinstance(driver, WindowsInlineDriver)
-    assert driver.is_inline is True
+    assert isinstance(driver, WindowsDriver)
+    assert driver.is_inline is False
 
 
 @pytest.mark.asyncio

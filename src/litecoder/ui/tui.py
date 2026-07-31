@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from collections import deque
 from collections.abc import Mapping, Sequence
 from contextlib import suppress
@@ -274,14 +273,6 @@ class PermissionPane(Vertical, can_focus=True):
         return text
 
 
-def _windows_inline_driver_class():  # type: ignore[no-untyped-def]
-    if os.name != "nt":
-        return None
-    from litecoder.ui.windows_inline_driver import WindowsInlineDriver
-
-    return WindowsInlineDriver
-
-
 class LiteCoderApp(App[str | None]):
     """Component responsible for the lite coder app."""
     TITLE = "LiteCoder"
@@ -451,7 +442,7 @@ class LiteCoderApp(App[str | None]):
         permission_prompt: TextualPermissionPrompt,
         session_id: str | None = None,
     ) -> None:
-        super().__init__(driver_class=_windows_inline_driver_class())
+        super().__init__()
         self.runtime = runtime
         self.sink = sink
         self.permission_prompt = permission_prompt
