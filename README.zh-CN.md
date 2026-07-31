@@ -168,7 +168,7 @@ LiteCoder 提供基于 EvalPlus 的评测 CLI，覆盖代理执行、上下文�
 ```bash
 python -m pip install -e ".[eval,providers,mcp,test]"
 litecoder-eval run agent-benchmark --dataset humaneval --limit 15
-litecoder-eval report <results.json>
+litecoder-eval report <run.json>
 ```
 
 运行完整的跨平台评测套件：
