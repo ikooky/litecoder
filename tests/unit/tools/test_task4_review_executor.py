@@ -197,3 +197,44 @@ async def test_executor_forces_exclusive_for_corrupted_mutating_spec(tmp_path) -
     release.set()
     await asyncio.gather(first, second)
     assert second_entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_executor_serializes_traversals_per_workspace(tmp_path) -> None:
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_entered = asyncio.Event()
+
+    class Tool:
+        spec = ToolSpec("glob_files", "Glob", {}, False, concurrency="traversal")
+
+        async def execute(self, call, context):
+            del context
+            if call.id == "first":
+                first_entered.set()
+                await release_first.wait()
+            else:
+                second_entered.set()
+            return ToolExecution.success("ok")
+
+    executor = executor_for(Tool())
+    first = asyncio.create_task(
+        executor.execute(
+            ToolCall("first", "glob_files", {"pattern": "*.py"}),
+            context(tmp_path),
+        )
+    )
+    await first_entered.wait()
+    second = asyncio.create_task(
+        executor.execute(
+            ToolCall("second", "glob_files", {"pattern": "*.txt"}),
+            context(tmp_path),
+        )
+    )
+
+    await asyncio.sleep(0)
+    assert not second_entered.is_set()
+
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert second_entered.is_set()

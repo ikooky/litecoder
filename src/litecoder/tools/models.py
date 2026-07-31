@@ -11,7 +11,7 @@ from litecoder.providers._json import JsonValue, snapshot_json, snapshot_mapping
 
 
 DedupePolicy = Literal["default", "none"]
-ToolConcurrency = Literal["shared", "exclusive"]
+ToolConcurrency = Literal["shared", "exclusive", "traversal"]
 PermissionRisk = Literal["safe", "workspace", "external", "high"]
 
 
@@ -41,8 +41,8 @@ class ToolSpec:
             raise ValueError("mutates_workspace must be a bool")
         object.__setattr__(self, "input_schema", snapshot_mapping(self.input_schema, "input_schema"))
         concurrency = self.concurrency or ("exclusive" if self.mutates_workspace else "shared")
-        if concurrency not in {"shared", "exclusive"}:
-            raise ValueError("concurrency must be shared or exclusive")
+        if concurrency not in {"shared", "exclusive", "traversal"}:
+            raise ValueError("concurrency must be shared, traversal, or exclusive")
         if self.mutates_workspace and concurrency != "exclusive":
             raise ValueError("mutating tools require exclusive concurrency")
         object.__setattr__(self, "concurrency", concurrency)
@@ -86,6 +86,9 @@ class ToolContext:
         default=None, repr=False, compare=False
     )
     ui_factory: object | None = field(default=None, repr=False, compare=False)
+    round_state: dict[str, object] = field(
+        default_factory=dict, repr=False, compare=False
+    )
     _redactor: SecretRedactor = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -94,6 +97,8 @@ class ToolContext:
         if not isinstance(self.workspace_root, Path):
             raise ValueError("workspace_root must be a Path")
         self.metadata = snapshot_mapping(self.metadata, "metadata")
+        if not isinstance(self.round_state, dict):
+            raise ValueError("round_state must be a dict")
         self.secret_environment_names = _secret_tuple(
             self.secret_environment_names, "secret_environment_names"
         )

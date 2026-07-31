@@ -55,10 +55,16 @@ async def _workspace_execution_lock(
     if getattr(spec, "workspace_lock", True) is False:
         yield
         return
+    concurrency = getattr(spec, "concurrency", None)
+    if concurrency == "traversal":
+        # Do not let queued traversals hold read ownership while a writer waits.
+        async with state.traversal_lock:
+            async with state.lock.read():
+                yield
+        return
     lock = (
         state.lock.write()
-        if getattr(spec, "mutates_workspace", False)
-        or getattr(spec, "concurrency", None) == "exclusive"
+        if getattr(spec, "mutates_workspace", False) or concurrency == "exclusive"
         else state.lock.read()
     )
     async with lock:

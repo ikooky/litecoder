@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ctypes
 import os
 import secrets
 import stat
 import sys
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
@@ -23,6 +24,7 @@ from litecoder.tools.models import ToolDenied, ToolFailure, ToolPartialFailure
 
 
 _DENIED = "Denied by workspace safety policy"
+_TRAVERSAL_YIELD_ENTRIES = 128
 
 # Capture the platform os primitives at import time. Capability checks must
 # reflect the platform, not whatever os.open currently resolves to, so runtime
@@ -60,6 +62,7 @@ class TraversalState:
     truncated: bool = False
     directory_entries_truncated: bool = False
     total_entries_truncated: bool = False
+    checkpoint_entries: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,15 +71,17 @@ class _PinnedProcessCwd:
     descriptor: int | None = None
 
 
-def secure_iter_files(
+async def secure_iter_files(
     root: Path, state: TraversalState | None = None
-) -> Iterator[str]:
+) -> AsyncIterator[str]:
     """Handle the secure iter files operation."""
     traversal = state if state is not None else TraversalState()
     if os.name == "nt":
-        yield from _windows_iter(root, traversal)
+        async for relative in _windows_iter(root, traversal):
+            yield relative
     else:
-        yield from _posix_iter(root, traversal)
+        async for relative in _posix_iter(root, traversal):
+            yield relative
 
 
 def secure_read_chunks(
@@ -337,7 +342,7 @@ def _posix_write(root: Path, relative: PurePosixPath, payload: bytes) -> bool:
             raise ToolFailure("Workspace file could not be written") from None
 
 
-def _posix_iter(root: Path, state: TraversalState) -> Iterator[str]:
+async def _posix_iter(root: Path, state: TraversalState) -> AsyncIterator[str]:
     _require_posix_traversal_capabilities()
     root_path = canonical_workspace_root(root)
     flags = _posix_flags()
@@ -346,12 +351,15 @@ def _posix_iter(root: Path, state: TraversalState) -> Iterator[str]:
     except (OSError, TypeError, NotImplementedError):
         raise ToolDenied(_DENIED) from None
     try:
-        yield from _posix_walk(root_fd, PurePosixPath(), state)
+        async for relative in _posix_walk(root_fd, PurePosixPath(), state):
+            yield relative
     finally:
         os.close(root_fd)
 
 
-def _bounded_entries(source: object, state: TraversalState) -> list[object] | None:
+async def _bounded_entries(
+    source: object, state: TraversalState
+) -> list[object] | None:
     entries: list[object] = []
     try:
         for entry in source:
@@ -365,14 +373,22 @@ def _bounded_entries(source: object, state: TraversalState) -> list[object] | No
                 state.truncated = True
                 state.directory_entries_truncated = True
                 return None
+            await _traversal_checkpoint(state)
     except (OSError, TypeError, NotImplementedError):
         return None
     return sorted(entries, key=lambda entry: entry.name)
 
 
-def _posix_walk(
+async def _traversal_checkpoint(state: TraversalState) -> None:
+    """Yield periodically so recursive scans cannot monopolize the event loop."""
+    state.checkpoint_entries += 1
+    if state.checkpoint_entries % _TRAVERSAL_YIELD_ENTRIES == 0:
+        await asyncio.sleep(0)
+
+
+async def _posix_walk(
     directory_fd: int, prefix: PurePosixPath, state: TraversalState
-) -> Iterator[str]:
+) -> AsyncIterator[str]:
     try:
         scanner = os.scandir(directory_fd)
     except (TypeError, NotImplementedError):
@@ -380,12 +396,13 @@ def _posix_walk(
     except OSError:
         return
     with scanner:
-        entries = _bounded_entries(scanner, state)
+        entries = await _bounded_entries(scanner, state)
     if entries is None:
         return
     for entry in entries:
         if state.truncated:
             return
+        await _traversal_checkpoint(state)
         if entry.name.casefold() == ".memory":
             continue
         try:
@@ -411,7 +428,8 @@ def _posix_walk(
             except OSError:
                 continue
             try:
-                yield from _posix_walk(child, relative, state)
+                async for child_relative in _posix_walk(child, relative, state):
+                    yield child_relative
             finally:
                 os.close(child)
 
@@ -784,37 +802,39 @@ def _windows_parent(
             handle.close()
 
 
-def _windows_iter(root: Path, state: TraversalState) -> Iterator[str]:
+async def _windows_iter(root: Path, state: TraversalState) -> AsyncIterator[str]:
     root_path = canonical_workspace_root(root)
     with _windows_parent(root_path, PurePosixPath(".")) as parent:
-        yield from _windows_walk(
+        async for relative in _windows_walk(
             parent.path,
             parent.handles[-1],
             parent.root_final,
             PurePosixPath(),
             state,
-        )
+        ):
+            yield relative
 
 
-def _windows_walk(
+async def _windows_walk(
     directory: Path,
     directory_handle: _WinHandle,
     root_final: str,
     prefix: PurePosixPath,
     state: TraversalState,
-) -> Iterator[str]:
+) -> AsyncIterator[str]:
     _win_validate(directory_handle, root_final, directory=True)
     try:
         scanner = os.scandir(directory)
     except (OSError, TypeError, NotImplementedError):
         return
     with scanner:
-        entries = _bounded_entries(scanner, state)
+        entries = await _bounded_entries(scanner, state)
     if entries is None:
         return
     for entry in entries:
         if state.truncated:
             return
+        await _traversal_checkpoint(state)
         if entry.name.casefold() == ".memory":
             continue
         child_path = directory / entry.name
@@ -833,9 +853,10 @@ def _windows_walk(
             except (ToolDenied, _WinNotFound):
                 continue
             try:
-                yield from _windows_walk(
+                async for child_relative in _windows_walk(
                     child_path, handle, root_final, relative, state
-                )
+                ):
+                    yield child_relative
             finally:
                 handle.close()
         elif stat.S_ISREG(information.st_mode):

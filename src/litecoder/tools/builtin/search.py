@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import codecs
 import re
+from dataclasses import dataclass
+from pathlib import Path
 from re import _constants as sre_constants
 from re import _parser as sre_parse
 
@@ -33,6 +36,15 @@ from litecoder.tools.models import (
 )
 
 
+_ROUND_GLOB_SNAPSHOT = "glob_files.snapshot"
+
+
+@dataclass(frozen=True, slots=True)
+class _GlobSnapshot:
+    paths: tuple[str, ...]
+    traversal: TraversalState
+
+
 class GlobFilesTool:
     """Component responsible for the glob files tool."""
     spec = ToolSpec(
@@ -48,7 +60,7 @@ class GlobFilesTool:
             "additionalProperties": False,
         },
         False,
-        concurrency="shared",
+        concurrency="traversal",
         permission_risk="safe",
     )
 
@@ -60,30 +72,90 @@ class GlobFilesTool:
         """Execute the requested tool call."""
         pattern = validate_glob_pattern(call.arguments.get("pattern"))
         limit = result_limit(call.arguments)
+        snapshot = await _round_glob_snapshot(context)
+        if snapshot is not None:
+            matches, result_truncated = _glob_matches(
+                snapshot.paths, pattern, limit
+            )
+            return _glob_result(
+                context,
+                pattern,
+                limit,
+                matches,
+                result_truncated,
+                snapshot.traversal,
+            )
+
         traversal = TraversalState()
         matches: list[str] = []
         result_truncated = False
-        for relative in secure_iter_files(context.workspace_root, traversal):
+        async for relative in secure_iter_files(context.workspace_root, traversal):
             if not matches_glob(relative, pattern):
                 continue
             if len(matches) == limit:
                 result_truncated = True
                 break
             matches.append(relative)
-        rendered = context.redactor.redact_text("\n".join(matches))
-        rendered, output_truncated = truncate_utf8(rendered)
-        metadata = {
-            "pattern": context.redactor.redact_text(pattern),
-            "count": len(matches),
-            "limit": limit,
-            "truncated": result_truncated or traversal.truncated or output_truncated,
-            "traversal_truncated": traversal.truncated,
-            "directory_entries_truncated": traversal.directory_entries_truncated,
-            "total_entries_truncated": traversal.total_entries_truncated,
-            "traversed_entries": traversal.traversed_entries,
-            "changed_workspace": False,
-        }
-        return ToolExecution.success(rendered, metadata=metadata, preview=matches)
+        return _glob_result(
+            context, pattern, limit, matches, result_truncated, traversal
+        )
+
+
+async def _round_glob_snapshot(context: ToolContext) -> _GlobSnapshot | None:
+    if context.metadata.get("glob_batch_size") is None:
+        return None
+    existing = context.round_state.get(_ROUND_GLOB_SNAPSHOT)
+    if existing is None:
+        existing = asyncio.create_task(_collect_glob_snapshot(context.workspace_root))
+        context.round_state[_ROUND_GLOB_SNAPSHOT] = existing
+    if not isinstance(existing, asyncio.Task):
+        raise RuntimeError("glob round state is invalid")
+    return await existing
+
+
+async def _collect_glob_snapshot(root: Path) -> _GlobSnapshot:
+    traversal = TraversalState()
+    paths: list[str] = []
+    async for relative in secure_iter_files(root, traversal):
+        paths.append(relative)
+    return _GlobSnapshot(tuple(paths), traversal)
+
+
+def _glob_matches(
+    paths: tuple[str, ...], pattern: str, limit: int
+) -> tuple[list[str], bool]:
+    matches: list[str] = []
+    for relative in paths:
+        if not matches_glob(relative, pattern):
+            continue
+        if len(matches) == limit:
+            return matches, True
+        matches.append(relative)
+    return matches, False
+
+
+def _glob_result(
+    context: ToolContext,
+    pattern: str,
+    limit: int,
+    matches: list[str],
+    result_truncated: bool,
+    traversal: TraversalState,
+) -> ToolExecution:
+    rendered = context.redactor.redact_text("\n".join(matches))
+    rendered, output_truncated = truncate_utf8(rendered)
+    metadata = {
+        "pattern": context.redactor.redact_text(pattern),
+        "count": len(matches),
+        "limit": limit,
+        "truncated": result_truncated or traversal.truncated or output_truncated,
+        "traversal_truncated": traversal.truncated,
+        "directory_entries_truncated": traversal.directory_entries_truncated,
+        "total_entries_truncated": traversal.total_entries_truncated,
+        "traversed_entries": traversal.traversed_entries,
+        "changed_workspace": False,
+    }
+    return ToolExecution.success(rendered, metadata=metadata, preview=matches)
 
 
 class SearchTextTool:
@@ -104,7 +176,7 @@ class SearchTextTool:
             "additionalProperties": False,
         },
         False,
-        concurrency="shared",
+        concurrency="traversal",
         permission_risk="safe",
     )
 
@@ -138,7 +210,7 @@ class SearchTextTool:
         result_truncated = False
         traversal = TraversalState()
         search_incomplete = False
-        for relative in secure_iter_files(context.workspace_root, traversal):
+        async for relative in secure_iter_files(context.workspace_root, traversal):
             if not matches_glob(relative, pattern):
                 continue
             try:

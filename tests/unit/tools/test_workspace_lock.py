@@ -134,6 +134,8 @@ def test_workspace_states_share_only_by_exact_workspace_id() -> None:
     assert first is not other
     assert first.lock is same.lock
     assert first.lock is not other.lock
+    assert first.traversal_lock is same.traversal_lock
+    assert first.traversal_lock is not other.traversal_lock
     assert first.version == other.version == 0
     first.version += 1
     assert same.version == 1

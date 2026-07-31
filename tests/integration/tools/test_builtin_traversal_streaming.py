@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -113,3 +114,113 @@ async def test_total_traversal_cap_stops_and_reports_metadata(
     assert result.metadata["traversal_truncated"] is True
     assert result.metadata["traversed_entries"] <= 5
     assert result.content.splitlines() == sorted(result.content.splitlines())
+
+
+@pytest.mark.asyncio
+async def test_glob_yields_while_scanning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import litecoder.tools.builtin.secure_path as secure_path
+
+    for index in range(4):
+        (tmp_path / f"{index}.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(secure_path, "_TRAVERSAL_YIELD_ENTRIES", 1)
+    original_sleep = asyncio.sleep
+    checkpoint = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pause_once(delay: float) -> None:
+        if delay == 0 and not checkpoint.is_set():
+            checkpoint.set()
+            await release.wait()
+            return
+        await original_sleep(delay)
+
+    monkeypatch.setattr(secure_path.asyncio, "sleep", pause_once)
+    task = asyncio.create_task(
+        GlobFilesTool().execute(
+            ToolCall("yielding-glob", "glob_files", {"pattern": "**/*.txt"}),
+            context(tmp_path),
+        )
+    )
+
+    await asyncio.wait_for(checkpoint.wait(), timeout=1.0)
+    assert not task.done()
+
+    release.set()
+    result = await asyncio.wait_for(task, timeout=1.0)
+    assert result.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_glob_cancels_at_a_traversal_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import litecoder.tools.builtin.secure_path as secure_path
+
+    (tmp_path / "one.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(secure_path, "_TRAVERSAL_YIELD_ENTRIES", 1)
+    checkpoint = asyncio.Event()
+    never = asyncio.Event()
+
+    async def block_checkpoint(delay: float) -> None:
+        assert delay == 0
+        checkpoint.set()
+        await never.wait()
+
+    monkeypatch.setattr(secure_path.asyncio, "sleep", block_checkpoint)
+    task = asyncio.create_task(
+        GlobFilesTool().execute(
+            ToolCall("cancelled-glob", "glob_files", {"pattern": "**/*.txt"}),
+            context(tmp_path),
+        )
+    )
+
+    await asyncio.wait_for(checkpoint.wait(), timeout=1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_multi_glob_round_reuses_one_traversal_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import litecoder.tools.builtin.search as search
+
+    (tmp_path / "a.py").write_text("x", encoding="utf-8")
+    (tmp_path / "b.toml").write_text("x", encoding="utf-8")
+    original_iter = search.secure_iter_files
+    traversals = 0
+
+    async def tracked_iter(root: Path, state: object):
+        nonlocal traversals
+        traversals += 1
+        async for relative in original_iter(root, state):
+            yield relative
+
+    monkeypatch.setattr(search, "secure_iter_files", tracked_iter)
+    round_context = ToolContext(
+        "agent",
+        "workspace",
+        tmp_path,
+        metadata={
+            "round_number": 1,
+            "permission_mode": "ask",
+            "glob_batch_size": 2,
+        },
+    )
+    tool = GlobFilesTool()
+
+    python_files = await tool.execute(
+        ToolCall("python", "glob_files", {"pattern": "*.py"}),
+        round_context,
+    )
+    toml_files = await tool.execute(
+        ToolCall("toml", "glob_files", {"pattern": "*.toml"}),
+        round_context,
+    )
+
+    assert traversals == 1
+    assert python_files.content == "a.py"
+    assert toml_files.content == "b.toml"

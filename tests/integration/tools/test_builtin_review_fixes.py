@@ -253,7 +253,8 @@ def test_posix_write_accepts_rename_dir_fd_capability(
     secure_path._require_posix_write_capabilities()
 
 
-def test_posix_traversal_preflights_scandir_fd_support(
+@pytest.mark.asyncio
+async def test_posix_traversal_preflights_scandir_fd_support(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import litecoder.tools.builtin.secure_path as secure_path
@@ -270,7 +271,12 @@ def test_posix_traversal_preflights_scandir_fd_support(
     monkeypatch.setattr(secure_path.os, "supports_fd", set())
 
     with pytest.raises(ToolDenied, match="workspace safety policy"):
-        list(secure_path._posix_iter(tmp_path, secure_path.TraversalState()))
+        [
+            path
+            async for path in secure_path._posix_iter(
+                tmp_path, secure_path.TraversalState()
+            )
+        ]
 
     assert opened is False
 

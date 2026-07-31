@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from litecoder.agent.loop import AgentLoop, RuntimeBudgets, TODO_REMINDER_TEXT
+from litecoder.agent.loop import (
+    MAX_CONCURRENT_TOOL_CALLS,
+    AgentLoop,
+    RuntimeBudgets,
+    TODO_REMINDER_TEXT,
+)
 from litecoder.agent.runtime import AgentRuntime
 from litecoder.agent.stop import StopPolicy
 from litecoder.context.manager import ContextManager
@@ -14,7 +19,7 @@ from litecoder.context.session.models import MessageRecord, SessionRecord, Sessi
 from litecoder.context.session.store import SQLiteSessionStore
 from litecoder.hooks import HookManager
 from litecoder.providers.models import ProviderEvent, StopReason, ToolCallBlock, Usage
-from litecoder.tools.models import ToolCall, ToolResult, ToolSpec
+from litecoder.tools.models import ToolCall, ToolContext, ToolResult, ToolSpec
 from litecoder.tools.permission import PermissionService
 from litecoder.tools.registry import ToolRegistry
 from litecoder.ui.events import UIEventType
@@ -1288,6 +1293,105 @@ async def test_tool_failure_cancels_sibling_before_it_can_complete(
     assert executor.sibling_completed is False
     context = await store.load_context("session-1")
     assert [message.role for message in context.messages] == ["user", "assistant"]
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_limits_simultaneous_tool_execution(
+    tmp_path: Path,
+) -> None:
+    class BoundedExecutor:
+        def __init__(self) -> None:
+            self.active = 0
+            self.maximum_active = 0
+            self.first_batch_started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls: list[str] = []
+
+        async def execute(self, call: ToolCall, context: object) -> ToolResult:
+            del context
+            self.active += 1
+            self.maximum_active = max(self.maximum_active, self.active)
+            self.calls.append(call.id)
+            if self.active == MAX_CONCURRENT_TOOL_CALLS:
+                self.first_batch_started.set()
+            try:
+                await self.release.wait()
+                return ToolResult(call.id, "success", "done")
+            finally:
+                self.active -= 1
+
+    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    await store.open()
+    await store.create_session(SessionRecord.new(
+        "session-1", "project-1", "workspace-1", "fake", "fake-model",
+        workspace_path=str(tmp_path),
+    ))
+    executor = BoundedExecutor()
+    calls = tuple(
+        ToolCallBlock(f"call-{index}", "read_file", {"path": f"{index}.txt"})
+        for index in range(MAX_CONCURRENT_TOOL_CALLS + 1)
+    )
+    loop = AgentLoop(
+        store=store,
+        provider=FakeProvider([_tool_round(*calls), _answer_round()]),
+        context=ContextManager(store, model="fake-model"),
+        tools=ToolRegistry(),
+        executor=executor,
+        duplicates=RecordingDuplicates(),
+    )
+
+    turn = asyncio.create_task(loop.run_turn("session-1", "read files"))
+    await asyncio.wait_for(executor.first_batch_started.wait(), timeout=1.0)
+
+    assert executor.active == MAX_CONCURRENT_TOOL_CALLS
+    assert len(executor.calls) == MAX_CONCURRENT_TOOL_CALLS
+
+    executor.release.set()
+    result = await asyncio.wait_for(turn, timeout=1.0)
+
+    assert result.status == "completed"
+    assert executor.maximum_active == MAX_CONCURRENT_TOOL_CALLS
+    assert len(executor.calls) == MAX_CONCURRENT_TOOL_CALLS + 1
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_marks_multi_glob_rounds_for_snapshot_reuse(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteSessionStore(tmp_path / "sessions.db")
+    await store.open()
+    await store.create_session(SessionRecord.new(
+        "session-1", "project-1", "workspace-1", "fake", "fake-model",
+        workspace_path=str(tmp_path),
+    ))
+    executor = RecordingExecutor()
+    loop = AgentLoop(
+        store=store,
+        provider=FakeProvider([
+            _tool_round(
+                ToolCallBlock("glob-py", "glob_files", {"pattern": "*.py"}),
+                ToolCallBlock("glob-md", "glob_files", {"pattern": "*.md"}),
+            ),
+            _answer_round(),
+        ]),
+        context=ContextManager(store, model="fake-model"),
+        tools=ToolRegistry(),
+        executor=executor,
+        duplicates=RecordingDuplicates(),
+    )
+
+    result = await loop.run_turn("session-1", "inspect files")
+
+    assert result.status == "completed"
+    assert len(executor.contexts) == 2
+    first_context = executor.contexts[0]
+    second_context = executor.contexts[1]
+    assert isinstance(first_context, ToolContext)
+    assert isinstance(second_context, ToolContext)
+    assert first_context.metadata["glob_batch_size"] == 2
+    assert first_context.round_state is second_context.round_state
     await store.close()
 
 

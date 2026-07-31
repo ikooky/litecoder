@@ -120,6 +120,7 @@ class WorkspaceState:
     """Data model representing the workspace state."""
     version: int = 0
     lock: AsyncRWLock = field(default_factory=AsyncRWLock)
+    traversal_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class WorkspaceStateRegistry:

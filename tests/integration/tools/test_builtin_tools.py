@@ -80,8 +80,8 @@ def test_builtin_tool_module_exports_exact_tool_set_and_specs() -> None:
         "search_text", "run_shell", "git_status", "git_diff",
     ]
     assert [tool.spec.concurrency for tool in tools] == [
-        "shared", "exclusive", "exclusive", "shared",
-        "shared", "exclusive", "shared", "shared",
+        "shared", "exclusive", "exclusive", "traversal",
+        "traversal", "exclusive", "shared", "shared",
     ]
     assert [tool.spec.permission_risk for tool in tools] == [
         "safe", "workspace", "workspace", "safe",

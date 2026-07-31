@@ -60,6 +60,7 @@ INITIAL_OUTPUT_MAX_TOKENS = 8_000
 MAX_OUTPUT_MAX_TOKENS = 64_000
 MAX_CONTINUATIONS = 3
 TODO_REMINDER_TOOL_ROUNDS = 3
+MAX_CONCURRENT_TOOL_CALLS = 4
 
 _FAILED_MEMORY_EXTRACTION_STATUSES = frozenset({
     "empty",
@@ -542,6 +543,7 @@ class AgentLoop:
                 status, reason = "failed", "tool_use without tool calls"
                 break
             permission_mode = self._current_permission_mode()
+            glob_batch_size = sum(call.name == "glob_files" for call in calls)
             tool_context = ToolContext(
                 agent_session_id=session_id,
                 workspace_id=session.workspace_id,
@@ -553,21 +555,14 @@ class AgentLoop:
                     agent_id=self.agent_id,
                     permission_mode=permission_mode,
                     task_ids=self.delegated_task_ids,
+                    glob_batch_size=glob_batch_size,
                 ),
                 secret_environment_names=self.secret_environment_names,
                 secret_values=self.secret_values,
                 parent_permission_broker=self.parent_permission_broker,
                 ui_factory=ui,
             )
-            tool_tasks = [
-                asyncio.create_task(self.executor.execute(call, tool_context))
-                for call in calls
-            ]
-            try:
-                results = await asyncio.gather(*tool_tasks)
-            except BaseException:
-                await self._cancel_tool_tasks(tool_tasks)
-                raise
+            results = await self._execute_tool_calls(calls, tool_context)
             memory_mutated = memory_mutated or _successful_memory_mutation(
                 calls,
                 results,
@@ -658,6 +653,25 @@ class AgentLoop:
         for task in pending:
             task.cancel()
             task.add_done_callback(_consume_task)
+
+    async def _execute_tool_calls(
+        self, calls: list[ToolCall], context: ToolContext
+    ) -> list[ToolResult]:
+        """Execute a model tool batch without flooding the event loop."""
+        results: list[ToolResult] = []
+        for start in range(0, len(calls), MAX_CONCURRENT_TOOL_CALLS):
+            batch = calls[start : start + MAX_CONCURRENT_TOOL_CALLS]
+            tasks = [
+                asyncio.create_task(self.executor.execute(call, context))
+                for call in batch
+            ]
+            try:
+                results.extend(await asyncio.gather(*tasks))
+            except BaseException:
+                await self._cancel_tool_tasks(tasks)
+                raise
+        return results
+
     async def _pre_model(self, request: ModelRequest) -> tuple[ModelRequest, bool]:
         if self.hooks is None:
             return request, False
@@ -1259,6 +1273,7 @@ def _tool_metadata(
     agent_id: str,
     permission_mode: str,
     task_ids: frozenset[str],
+    glob_batch_size: int,
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
         "round_number": round_number,
@@ -1270,6 +1285,8 @@ def _tool_metadata(
     }
     if permission_mode == PermissionMode.BYPASS.value:
         metadata["bypass_authorized"] = True
+    if glob_batch_size > 1:
+        metadata["glob_batch_size"] = glob_batch_size
     return metadata
 
 

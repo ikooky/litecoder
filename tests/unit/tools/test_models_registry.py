@@ -96,6 +96,9 @@ def test_tool_spec_validates_control_metadata() -> None:
     assert spec.permission_risk == "workspace"
     assert spec.dedupe_policy == "none"
 
+    traversal = ToolSpec("glob", "Glob", {}, False, concurrency="traversal")
+    assert traversal.concurrency == "traversal"
+
     with pytest.raises(ValueError, match="dedupe_policy"):
         ToolSpec("bad", "Bad", {}, False, dedupe_policy="sometimes")  # type: ignore[arg-type]
 
