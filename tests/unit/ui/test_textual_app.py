@@ -11,7 +11,11 @@ from textual.selection import SELECT_ALL
 from textual.widgets import Static
 
 from litecoder.agent.result import AgentResult
-from litecoder.cli.local_commands import LOCAL_COMMANDS, LocalCommandResult
+from litecoder.cli.local_commands import (
+    LOCAL_COMMANDS,
+    LocalCommandResult,
+    LocalCommandSpec,
+)
 from litecoder.providers.models import Usage
 from litecoder.tools.permission import PermissionPrompt, PromptChoice
 from litecoder.ui.events import UIEventFactory, UIEventType
@@ -231,6 +235,113 @@ async def test_prompt_cursor_only_blinks_for_blank_or_whitespace_input() -> None
 
         await pilot.press("backspace")
         assert prompt.cursor_blink is True
+
+
+@pytest.mark.asyncio
+async def test_slash_command_menu_lists_and_filters_commands_case_insensitively() -> None:
+    app, _, _ = build_app()
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        prompt = app.query_one("#prompt", PromptEditor)
+        menu = app.query_one("#command-menu", Static)
+
+        prompt.load_text("/")
+        await pilot.pause()
+        assert menu.display is True
+        assert [command.name for command in app._command_matches] == sorted(
+            LOCAL_COMMANDS
+        )
+        assert app._selected_command_name == "/clear"
+        assert (
+            app.query_one("#prompt-container").region.bottom == menu.region.y
+        )
+        assert menu.region.bottom == app.query_one("#footer").region.y
+        screenshot = app.export_screenshot()
+        assert "/clear" in screenshot
+        assert "Start" in screenshot
+
+        prompt.load_text("/MO")
+        await pilot.pause()
+        assert menu.display is True
+        assert [command.name for command in app._command_matches] == ["/model"]
+
+        prompt.load_text("/model provider")
+        await pilot.pause()
+        assert menu.display is False
+        assert app._command_matches == ()
+
+        prompt.load_text("hello")
+        await pilot.pause()
+        assert menu.display is False
+
+
+@pytest.mark.asyncio
+async def test_slash_command_menu_navigates_and_completes_with_tab() -> None:
+    app, _, _ = build_app()
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        prompt = app.query_one("#prompt", PromptEditor)
+        prompt.load_text("/m")
+        await pilot.pause()
+
+        assert [command.name for command in app._command_matches] == [
+            "/memory",
+            "/model",
+        ]
+        assert app._selected_command_name == "/memory"
+
+        await pilot.press("down", "tab")
+        await pilot.pause()
+
+        assert prompt.text == "/model"
+        assert prompt.cursor_location == (0, len("/model"))
+        assert app._selected_command_name == "/model"
+
+
+@pytest.mark.asyncio
+async def test_slash_command_menu_windows_large_match_sets() -> None:
+    app, _, _ = build_app()
+    commands = tuple(
+        LocalCommandSpec(
+            f"/command-{index:05d}",
+            f"/command-{index:05d}",
+            f"Command {index}",
+        )
+        for index in range(10_000)
+    )
+    app.router.command_specs = lambda: commands  # type: ignore[method-assign]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        prompt = app.query_one("#prompt", PromptEditor)
+        prompt.load_text("/")
+        await pilot.pause()
+
+        assert len(app._command_matches) == 10_000
+        assert [command.name for command in app._visible_command_matches()] == [
+            f"/command-{index:05d}" for index in range(8)
+        ]
+
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert app._selected_command_index == 8
+        assert app._command_window_start == 1
+        assert [command.name for command in app._visible_command_matches()] == [
+            f"/command-{index:05d}" for index in range(1, 9)
+        ]
+
+        await pilot.press("end")
+        await pilot.pause()
+        assert app._selected_command_index == 9_999
+        assert app._command_window_start == 9_992
+        assert [command.name for command in app._visible_command_matches()] == [
+            f"/command-{index:05d}" for index in range(9_992, 10_000)
+        ]
+
+        await pilot.press("home")
+        await pilot.pause()
+        assert app._selected_command_index == 0
+        assert app._command_window_start == 0
+
 
 @pytest.mark.asyncio
 async def test_textual_app_submits_and_renders_streamed_markdown() -> None:

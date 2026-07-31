@@ -20,28 +20,36 @@ if TYPE_CHECKING:
     from litecoder.agent.runtime import AgentRuntime
 
 
-LOCAL_COMMANDS = {
-    "/clear",
-    "/compact",
-    "/context",
-    "/exit",
-    "/help",
-    "/memory",
-    "/model",
-    "/tasks",
-    "/trace",
-}
+@dataclass(frozen=True, slots=True)
+class LocalCommandSpec:
+    """Display and usage metadata for one local command."""
 
-_HELP = """Local commands:
-  /clear
-  /compact
-  /context
-  /exit
-  /help
-  /memory [name]
-  /model [provider] [model]
-  /tasks [task-id]
-  /trace"""
+    name: str
+    usage: str
+    description: str
+
+
+LOCAL_COMMAND_SPECS = (
+    LocalCommandSpec("/clear", "/clear", "Start a new session context."),
+    LocalCommandSpec("/compact", "/compact", "Compact the active session context."),
+    LocalCommandSpec("/context", "/context", "Show context and token usage."),
+    LocalCommandSpec("/exit", "/exit", "Leave the interactive interface."),
+    LocalCommandSpec("/help", "/help", "Show local command help."),
+    LocalCommandSpec("/memory", "/memory [name]", "Inspect workspace memory."),
+    LocalCommandSpec(
+        "/model",
+        "/model [provider] [model]",
+        "Show or change the selected model.",
+    ),
+    LocalCommandSpec("/tasks", "/tasks [task-id]", "List or inspect tasks."),
+    LocalCommandSpec("/trace", "/trace", "Show trace and command-audit locations."),
+)
+
+LOCAL_COMMANDS = frozenset(spec.name for spec in LOCAL_COMMAND_SPECS)
+
+_HELP = "Local commands:\n" + "\n".join(
+    f"  {spec.usage}" for spec in LOCAL_COMMAND_SPECS
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +83,10 @@ class LocalCommandRouter:
     def names(self) -> list[str]:
         """Handle the names operation."""
         return sorted(LOCAL_COMMANDS)
+
+    def command_specs(self) -> tuple[LocalCommandSpec, ...]:
+        """Return the command metadata used by interactive command completion."""
+        return LOCAL_COMMAND_SPECS
 
     async def dispatch(
         self,

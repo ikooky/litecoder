@@ -10,6 +10,8 @@ from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 from textual.widgets import Static
+
+from litecoder.cli.local_commands import LocalCommandSpec
 from litecoder.ui.markdown import WrappingMarkdown
 from litecoder.ui.presenters import (
     compact_number,
@@ -74,6 +76,33 @@ class TranscriptBlockWidget(Static):
             self.content_size.width or self.container_size.width or self.app.size.width,
         )
         return _selectable_text(renderable, self.app.console, width)
+
+
+def render_command_suggestions(
+    commands: Sequence[LocalCommandSpec],
+    *,
+    selected_name: str | None,
+    first_index: int,
+    total_count: int,
+) -> RenderableType:
+    """Render the local-command completion list below the prompt."""
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(width=28, no_wrap=True)
+    table.add_column(ratio=1, overflow="fold")
+    for command in commands:
+        selected = command.name == selected_name
+        command_style = "bold #cdd6f4" if selected else "#b8b8b8"
+        detail_style = "#cdd6f4" if selected else "dim"
+        label = Text("› " if selected else "  ", style=command_style)
+        label.append(command.usage, style=command_style)
+        table.add_row(label, Text(command.description, style=detail_style))
+    if total_count <= len(commands):
+        return table
+    last_index = first_index + len(commands)
+    range_text = Text(
+        f"  {first_index + 1}-{last_index} / {total_count:,}", style="dim"
+    )
+    return Group(table, range_text)
 
 
 def render_transcript_block(

@@ -22,7 +22,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Static, TextArea
 from textual.worker import Worker
 
-from litecoder.cli.local_commands import LocalCommandRouter
+from litecoder.cli.local_commands import LocalCommandRouter, LocalCommandSpec
 from litecoder.tools.permission import (
     PERMISSION_CONFIRMATION_TIMEOUT_SECONDS,
     PermissionMode,
@@ -41,11 +41,15 @@ from litecoder.ui.textual_widgets import (
     TranscriptBlockWidget,
     render_footer,
     render_live_tail,
+    render_command_suggestions,
     startup_banner,
 )
 
 if TYPE_CHECKING:
     from litecoder.agent.runtime import AgentRuntime
+
+
+COMMAND_MENU_VISIBLE_ROWS = 8
 
 
 class PromptEditor(TextArea):
@@ -57,7 +61,28 @@ class PromptEditor(TextArea):
             super().__init__()
             self.value = value
 
+    class CommandNavigationRequested(Message):
+        """Request a selection change in the slash-command completion list."""
+
+        def __init__(self, key: str) -> None:
+            super().__init__()
+            self.key = key
+
+    class CommandCompletionRequested(Message):
+        """Request completion with the selected slash command."""
+
     async def _on_key(self, event: events.Key) -> None:
+        if self.command_completion_active:
+            if event.key in {"up", "down", "pagedown", "pageup", "home", "end"}:
+                event.stop()
+                event.prevent_default()
+                self.post_message(self.CommandNavigationRequested(event.key))
+                return
+            if event.key == "tab":
+                event.stop()
+                event.prevent_default()
+                self.post_message(self.CommandCompletionRequested())
+                return
         if event.key == "enter":
             event.stop()
             event.prevent_default()
@@ -69,6 +94,8 @@ class PromptEditor(TextArea):
             self.insert("\n")
             return
         await super()._on_key(event)
+
+    command_completion_active = False
 
 
 class RuntimeEventsReady(Message):
@@ -400,6 +427,17 @@ class LiteCoderApp(App[str | None]):
         border-bottom: solid #858585;
     }
 
+    #command-menu {
+        display: none;
+        width: 100%;
+        height: auto;
+        max-height: 10;
+        padding: 0 1;
+        border-bottom: solid #666666;
+        background: #0d0d0d;
+        overflow-y: auto;
+    }
+
     #prompt-prefix {
         width: 3;
         height: 1;
@@ -458,6 +496,10 @@ class LiteCoderApp(App[str | None]):
         self._animation_frame = 0
         self._interrupt_count = 0
         self._details_expanded = False
+        self._command_matches: tuple[LocalCommandSpec, ...] = ()
+        self._command_window_start = 0
+        self._selected_command_index = 0
+        self._selected_command_name: str | None = None
         self._permission_active: _PermissionRequest | None = None
         self._permission_queue: deque[_PermissionRequest] = deque()
         self._permission_timeout_task: asyncio.Task[None] | None = None
@@ -481,6 +523,7 @@ class LiteCoderApp(App[str | None]):
                         soft_wrap=True,
                         compact=True,
                     )
+                yield Static("", id="command-menu")
                 yield Static("", id="footer")
 
     async def on_mount(self) -> None:
@@ -615,6 +658,54 @@ class LiteCoderApp(App[str | None]):
         if event.text_area.id == "prompt":
             event.text_area.cursor_blink = not bool(event.text_area.text.strip())
             self._resize_editor()
+            self._refresh_command_menu()
+
+    def on_prompt_editor_command_navigation_requested(
+        self,
+        message: PromptEditor.CommandNavigationRequested,
+    ) -> None:
+        """Move the highlighted command completion."""
+        message.stop()
+        if not self._command_matches:
+            return
+        last_index = len(self._command_matches) - 1
+        if message.key == "home":
+            self._selected_command_index = 0
+        elif message.key == "end":
+            self._selected_command_index = last_index
+        elif message.key == "pageup":
+            self._selected_command_index = max(
+                0,
+                self._selected_command_index - COMMAND_MENU_VISIBLE_ROWS,
+            )
+        elif message.key == "pagedown":
+            self._selected_command_index = min(
+                last_index,
+                self._selected_command_index + COMMAND_MENU_VISIBLE_ROWS,
+            )
+        else:
+            delta = -1 if message.key == "up" else 1
+            self._selected_command_index = (
+                self._selected_command_index + delta
+            ) % len(self._command_matches)
+        self._selected_command_name = self._command_matches[
+            self._selected_command_index
+        ].name
+        self._ensure_selected_command_visible()
+        self._render_command_menu()
+
+    def on_prompt_editor_command_completion_requested(
+        self,
+        message: PromptEditor.CommandCompletionRequested,
+    ) -> None:
+        """Replace the typed command prefix with the selected command name."""
+        message.stop()
+        if not self._command_matches:
+            return
+        command = self._command_matches[self._selected_command_index]
+        editor = self.query_one("#prompt", PromptEditor)
+        editor.load_text(command.name)
+        editor.cursor_location = (0, len(command.name))
 
     def on_resize(self, _: events.Resize) -> None:
         """Handle the on resize operation."""
@@ -866,6 +957,78 @@ class LiteCoderApp(App[str | None]):
             return
         self._refresh_live_tail()
         self._refresh_footer()
+
+    def _refresh_command_menu(self) -> None:
+        if not self.is_mounted:
+            return
+        editor = self.query_one("#prompt", PromptEditor)
+        matches = self._matching_local_commands(editor.text)
+        self._command_matches = matches
+        selected_index = next(
+            (
+                index
+                for index, command in enumerate(matches)
+                if command.name == self._selected_command_name
+            ),
+            None,
+        )
+        if selected_index is None:
+            self._selected_command_index = 0
+            self._command_window_start = 0
+        else:
+            self._selected_command_index = selected_index
+        self._selected_command_name = (
+            matches[self._selected_command_index].name if matches else None
+        )
+        self._ensure_selected_command_visible()
+        self._render_command_menu()
+
+    def _ensure_selected_command_visible(self) -> None:
+        """Keep the highlighted command inside the fixed visible window."""
+        match_count = len(self._command_matches)
+        if not match_count:
+            self._command_window_start = 0
+            return
+        max_start = max(0, match_count - COMMAND_MENU_VISIBLE_ROWS)
+        start = min(max(0, self._command_window_start), max_start)
+        if self._selected_command_index < start:
+            start = self._selected_command_index
+        elif self._selected_command_index >= start + COMMAND_MENU_VISIBLE_ROWS:
+            start = self._selected_command_index - COMMAND_MENU_VISIBLE_ROWS + 1
+        self._command_window_start = min(start, max_start)
+
+    def _visible_command_matches(self) -> tuple[LocalCommandSpec, ...]:
+        return self._command_matches[
+            self._command_window_start : self._command_window_start
+            + COMMAND_MENU_VISIBLE_ROWS
+        ]
+
+    def _render_command_menu(self) -> None:
+        """Render only the visible window of matching local commands."""
+        editor = self.query_one("#prompt", PromptEditor)
+        menu = self.query_one("#command-menu", Static)
+        menu.display = bool(self._command_matches)
+        editor.command_completion_active = bool(self._command_matches)
+        if self._command_matches:
+            menu.update(
+                render_command_suggestions(
+                    self._visible_command_matches(),
+                    selected_name=self._selected_command_name,
+                    first_index=self._command_window_start,
+                    total_count=len(self._command_matches),
+                )
+            )
+
+    def _matching_local_commands(self, text: str) -> tuple[LocalCommandSpec, ...]:
+        stripped = text.lstrip()
+        if not stripped.startswith("/") or any(char.isspace() for char in stripped):
+            return ()
+        prefix = stripped.casefold()
+        return tuple(
+            command
+            for command in self.router.command_specs()
+            if command.name.casefold().startswith(prefix)
+        )
 
     def _refresh_live_tail(self) -> None:
         if not self.is_mounted:
