@@ -19,9 +19,17 @@ from litecoder.tools.permission import (
     PermissionPrompt,
     PromptChoice,
 )
-from litecoder.ui import input as input_module
 
 PermissionKeyReader = Callable[[], str]
+
+
+class PermissionInputInterrupt(KeyboardInterrupt):
+    """Signal that an interactive permission prompt was interrupted."""
+
+    def __init__(self, source: str) -> None:
+        super().__init__(source)
+        self.source = source
+
 
 _CHOICES: tuple[PromptChoice, ...] = (
     PromptChoice.DENY,
@@ -50,54 +58,53 @@ def select_permission_choice(
     selected = 0
     deadline = time.monotonic() + timeout_seconds
     try:
-        with input_module.suspend_waiting_status(output):
-            with Live(
-                _permission_menu(prompt, selected, timeout_seconds),
-                console=output,
-                auto_refresh=False,
-                transient=False,
-                redirect_stdout=False,
-                redirect_stderr=False,
-            ) as live:
-                live.refresh()
-                _flush_console(output)
-                while True:
-                    if read_key is None:
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            return PromptChoice.DENY
-                        key = _read_permission_key(remaining)
-                    else:
-                        key = read_key()
-                    if key in {"up", "k"}:
-                        selected = (selected - 1) % len(_CHOICES)
-                        live.update(
-                            _permission_menu(prompt, selected, timeout_seconds),
-                            refresh=True,
-                        )
-                        _flush_console(output)
-                        continue
-                    if key in {"down", "j", "tab"}:
-                        selected = (selected + 1) % len(_CHOICES)
-                        live.update(
-                            _permission_menu(prompt, selected, timeout_seconds),
-                            refresh=True,
-                        )
-                        _flush_console(output)
-                        continue
-                    if key in {"enter", "\r", "\n"}:
-                        return _CHOICES[selected]
-                    if key == "escape":
-                        raise input_module.InputInterrupt("escape")
-                    if key == "q":
+        with Live(
+            _permission_menu(prompt, selected, timeout_seconds),
+            console=output,
+            auto_refresh=False,
+            transient=False,
+            redirect_stdout=False,
+            redirect_stderr=False,
+        ) as live:
+            live.refresh()
+            _flush_console(output)
+            while True:
+                if read_key is None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
                         return PromptChoice.DENY
-                    direct = _direct_choice(key)
-                    if direct is not None:
-                        return direct
-    except input_module.InputInterrupt:
+                    key = _read_permission_key(remaining)
+                else:
+                    key = read_key()
+                if key in {"up", "k"}:
+                    selected = (selected - 1) % len(_CHOICES)
+                    live.update(
+                        _permission_menu(prompt, selected, timeout_seconds),
+                        refresh=True,
+                    )
+                    _flush_console(output)
+                    continue
+                if key in {"down", "j", "tab"}:
+                    selected = (selected + 1) % len(_CHOICES)
+                    live.update(
+                        _permission_menu(prompt, selected, timeout_seconds),
+                        refresh=True,
+                    )
+                    _flush_console(output)
+                    continue
+                if key in {"enter", "\r", "\n"}:
+                    return _CHOICES[selected]
+                if key == "escape":
+                    raise PermissionInputInterrupt("escape")
+                if key == "q":
+                    return PromptChoice.DENY
+                direct = _direct_choice(key)
+                if direct is not None:
+                    return direct
+    except PermissionInputInterrupt:
         raise
     except KeyboardInterrupt as error:
-        raise input_module.InputInterrupt("ctrl_c") from error
+        raise PermissionInputInterrupt("ctrl_c") from error
     except (EOFError, StopIteration, TimeoutError):
         return PromptChoice.DENY
 
@@ -243,7 +250,7 @@ def _read_windows_key(timeout_seconds: float) -> str:
     if character in {"\r", "\n"}:
         return "enter"
     if character == "\x03":
-        raise input_module.InputInterrupt("ctrl_c")
+        raise PermissionInputInterrupt("ctrl_c")
     if character == "\x1b":
         return "escape"
     return character.casefold()
@@ -268,7 +275,7 @@ def _read_posix_key(timeout_seconds: float) -> str:
         if character in {"\r", "\n"}:
             return "enter"
         if character == "\x03":
-            raise input_module.InputInterrupt("ctrl_c")
+            raise PermissionInputInterrupt("ctrl_c")
         if character == "\x1b":
             sequence = ""
             for _ in range(2):

@@ -14,7 +14,6 @@ dependencies = [
   "pydantic>=2.13,<3",
   "portalocker>=3.2,<4",
   "jsonschema>=4.26,<5",
-  "prompt-toolkit>=3.0,<4",
   "rich>=15,<16",
   "textual>=8.2,<9",
   "tomli-w>=1.2,<2",

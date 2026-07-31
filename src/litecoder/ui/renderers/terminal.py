@@ -14,8 +14,8 @@ from rich.segment import Segment, Segments
 from rich.table import Table
 from rich.text import Text
 
-from litecoder.ui import input as input_module
 from litecoder.ui.events import RuntimeUIEvent, UIEventType
+from litecoder.ui import terminal_state
 
 from litecoder.ui.markdown import WrappingMarkdown
 from litecoder.ui.presenters import normalize_windows_drive_letters
@@ -137,7 +137,7 @@ class TerminalRenderer:
         self._memory_count = 0
         self._tool_starts.clear()
         self._tool_call_completions.clear()
-        input_module.clear_todo_progress(self.console)
+        terminal_state.clear_todo_progress(self.console)
 
     def _model_requested(self, event: RuntimeUIEvent) -> None:
         count = _memory_count_from_payload(event.payload)
@@ -157,7 +157,7 @@ class TerminalRenderer:
     def _assistant_message(self, text: str) -> None:
         if not text.strip():
             return
-        input_module.stop_waiting_status(self.console)
+        terminal_state.stop_waiting_status(self.console)
         grid = Table.grid(expand=True)
         grid.add_column(width=1)
         grid.add_column(width=1)
@@ -179,7 +179,7 @@ class TerminalRenderer:
                 segments.append(Segment.line())
         if not segments:
             return
-        with input_module.suspend_waiting_status(self.console):
+        with terminal_state.suspend_waiting_status(self.console):
             self.console.print(Segments(segments), end="", soft_wrap=True)
 
     def _thinking_delta(self, event: RuntimeUIEvent) -> None:
@@ -240,11 +240,11 @@ class TerminalRenderer:
         if (
             success
             and tool_name == "todo_write"
-            and input_module.replace_todo_progress(
+            and terminal_state.replace_todo_progress(
                 self.console, _todo_values(event, arguments)
             )
         ):
-            if not input_module.has_live_waiting_surface(self.console):
+            if not terminal_state.has_live_waiting_surface(self.console):
                 self._todo_progress_block()
             return
         title = _tool_title(tool_name, arguments, self.workspace_root)
@@ -256,11 +256,11 @@ class TerminalRenderer:
         self._tool_block(title, detail, success=success)
 
     def _todo_progress_block(self) -> None:
-        items = input_module.todo_progress_items(self.console)
+        items = terminal_state.todo_progress_items(self.console)
         if not items:
             return
-        title = input_module._todo_progress_heading(items)
-        detail = [text for _, text in input_module._todo_progress_lines(items)]
+        title = terminal_state._todo_progress_heading(items)
+        detail = [text for _, text in terminal_state._todo_progress_lines(items)]
         self._tool_block(title, detail, success=True)
 
     def _tool_block(
@@ -315,7 +315,7 @@ class TerminalRenderer:
 
     def _turn_finished(self, event: RuntimeUIEvent) -> None:
         self.flush()
-        input_module.stop_waiting_status(self.console)
+        terminal_state.stop_waiting_status(self.console)
         self._print_atomic(
             "",
             Text(

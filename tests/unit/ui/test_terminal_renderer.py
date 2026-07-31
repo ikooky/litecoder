@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from litecoder.ui import input as input_module
+from litecoder.ui import terminal_state
 from litecoder.ui.events import RuntimeUIEvent, UIEventType
 from litecoder.ui.renderers.terminal import TerminalRenderer
 
@@ -116,7 +116,7 @@ def test_terminal_renderer_prints_assistant_output_while_live_input_is_suspended
         yield
         snapshots.append(("exit", stream.getvalue()))
 
-    monkeypatch.setattr(input_module, "suspend_waiting_status", suspended)
+    monkeypatch.setattr(terminal_state, "suspend_waiting_status", suspended)
 
     renderer.emit(event(UIEventType.ASSISTANT_COMPLETED, {"text": "final answer"}))
 
@@ -230,7 +230,7 @@ def test_terminal_renderer_omits_zero_tool_and_memory_counts() -> None:
 
 def test_terminal_renderer_renders_tool_results_with_status_colors_and_abs_paths() -> None:
     stream, renderer = console_and_renderer(width=140, color_system="standard")
-    relative_path = "src/litecoder/ui/input.py"
+    relative_path = "src/litecoder/ui/terminal_state.py"
     absolute_path = str((Path.cwd() / relative_path).resolve())
 
     renderer.emit(event(UIEventType.TURN_STARTED, {"prompt": "inspect"}))
@@ -288,7 +288,7 @@ def test_terminal_renderer_keeps_waiting_status_until_assistant_answer(monkeypat
     stream, renderer = console_and_renderer()
     stops: list[Console] = []
     monkeypatch.setattr(
-        input_module,
+        terminal_state,
         "stop_waiting_status",
         lambda console: stops.append(console),
     )
@@ -323,7 +323,7 @@ def test_terminal_renderer_renders_glob_title_and_results_as_absolute_paths() ->
     stream, renderer = console_and_renderer(width=160)
     pattern = "**/*"
     absolute_pattern = str(Path.cwd() / pattern)
-    absolute_result = str((Path.cwd() / "src/litecoder/ui/input.py").resolve())
+    absolute_result = str((Path.cwd() / "src/litecoder/ui/terminal_state.py").resolve())
 
     renderer.emit(event(UIEventType.TURN_STARTED, {"prompt": "list"}))
     renderer.emit(RuntimeUIEvent(
@@ -343,7 +343,7 @@ def test_terminal_renderer_renders_glob_title_and_results_as_absolute_paths() ->
         payload={
             "status": "success",
             "preview": "",
-            "metadata": {"preview": ["src/litecoder/ui/input.py"]},
+            "metadata": {"preview": ["src/litecoder/ui/terminal_state.py"]},
         },
     ))
 
@@ -470,58 +470,6 @@ def test_terminal_renderer_uses_completed_tool_call_arguments_and_releases_state
     assert "Bash(git status)" in stream.getvalue()
     assert renderer._tool_starts == {}
     assert renderer._tool_call_completions == {}
-
-
-def test_terminal_renderer_routes_todo_write_into_live_progress_state() -> None:
-    stream, renderer = console_and_renderer()
-    setattr(renderer.console, input_module._LIVE_DRAFT_ATTRIBUTE, object())
-    initial = [
-        {
-            "content": "分析配置",
-            "active_form": "正在分析配置",
-            "status": "in_progress",
-        },
-        {
-            "content": "分析日志",
-            "active_form": "正在分析日志",
-            "status": "pending",
-        },
-    ]
-
-    renderer.emit(RuntimeUIEvent(
-        UIEventType.TOOL_EXECUTION_FINISHED,
-        sequence=1,
-        timestamp=1.0,
-        tool_call_id="todo-1",
-        tool_name="todo_write",
-        payload={"status": "success", "metadata": {"todos": initial}},
-    ))
-
-    assert stream.getvalue() == ""
-    assert [
-        item.status for item in input_module.todo_progress_items(renderer.console)
-    ] == ["in_progress", "pending"]
-
-    updated = [
-        {**initial[0], "status": "completed"},
-        {**initial[1], "status": "in_progress"},
-    ]
-    renderer.emit(RuntimeUIEvent(
-        UIEventType.TOOL_EXECUTION_FINISHED,
-        sequence=2,
-        timestamp=2.0,
-        tool_call_id="todo-2",
-        tool_name="todo_write",
-        payload={"status": "success", "metadata": {"todos": updated}},
-    ))
-
-    items = input_module.todo_progress_items(renderer.console)
-    assert [item.status for item in items] == ["completed", "in_progress"]
-    assert "todo_write" not in stream.getvalue()
-    assert "{" not in stream.getvalue()
-
-    renderer.emit(event(UIEventType.TURN_STARTED, {"prompt": "next"}))
-    assert input_module.todo_progress_items(renderer.console) == ()
 
 
 def test_terminal_renderer_formats_todo_snapshot_without_live_surface() -> None:

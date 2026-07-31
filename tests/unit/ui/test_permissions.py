@@ -4,7 +4,6 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
-import sys
 
 from rich.console import Console
 
@@ -78,111 +77,6 @@ def test_permission_prompt_resolves_cwd_from_workspace_root() -> None:
     assert f"cwd: {(workspace / 'tests').resolve()}" in output
 
 
-def test_permission_prompt_pauses_stdout_patch_for_live_refresh() -> None:
-    keys = iter(("down", "enter"))
-    console = Console(file=StringIO(), force_terminal=True, color_system=None)
-    events: list[str] = []
-
-    class StdoutPatch:
-        def suspend(self):  # type: ignore[no-untyped-def]
-            class Suspended:
-                def __enter__(self) -> None:
-                    events.append("pause-enter")
-
-                def __exit__(self, exc_type, exc, traceback) -> None:  # type: ignore[no-untyped-def]
-                    events.append("pause-exit")
-
-            return Suspended()
-
-    setattr(console, permissions_module.input_module._STDOUT_PATCH_ATTRIBUTE, StdoutPatch())
-
-    choice = select_permission_choice(
-        PermissionPrompt("run_shell", "external", "external:abc"),
-        console=console,
-        read_key=lambda: next(keys),
-    )
-
-    output = console.file.getvalue()
-    assert choice is PromptChoice.ALLOW_ONCE
-    assert events == ["pause-enter", "pause-exit"]
-    assert "> deny" in output
-    assert "> allow" in output
-
-
-def test_permission_prompt_bypasses_stdout_proxy_for_visible_updates(monkeypatch) -> None:
-    keys = iter(("down", "enter"))
-    original_stdout = StringIO()
-    original_stderr = StringIO()
-    proxy_writes: list[str] = []
-
-    class Proxy:
-        def __init__(self, *, raw: bool) -> None:
-            self.raw = raw
-
-        def write(self, value: str) -> int:
-            proxy_writes.append(value)
-            return len(value)
-
-        def flush(self) -> None:
-            return None
-
-        def close(self) -> None:
-            return None
-
-        def isatty(self) -> bool:
-            return True
-
-        @property
-        def encoding(self) -> str:
-            return "utf-8"
-
-    monkeypatch.setattr("prompt_toolkit.patch_stdout.StdoutProxy", Proxy)
-    monkeypatch.setattr(sys, "stdout", original_stdout)
-    monkeypatch.setattr(sys, "stderr", original_stderr)
-
-    console = Console(force_terminal=True, color_system=None, width=80)
-    with permissions_module.input_module._patched_stdout_context(console):
-        choice = select_permission_choice(
-            PermissionPrompt("run_shell", "external", "external:abc"),
-            console=console,
-            read_key=lambda: next(keys),
-        )
-
-    output = original_stdout.getvalue()
-    assert choice is PromptChoice.ALLOW_ONCE
-    assert "> deny" in output
-    assert "> allow" in output
-    assert "Permission" not in "".join(proxy_writes)
-
-
-def test_permission_prompt_suspends_waiting_status(monkeypatch) -> None:
-    keys = iter(("enter",))
-    console = Console(file=StringIO(), force_terminal=True, color_system=None)
-    events: list[str] = []
-
-    class Suspended:
-        def __enter__(self) -> None:
-            events.append("enter")
-
-        def __exit__(self, exc_type, exc, traceback) -> None:  # type: ignore[no-untyped-def]
-            events.append("exit")
-
-    monkeypatch.setattr(
-        permissions_module.input_module,
-        "suspend_waiting_status",
-        lambda selected_console: events.append(str(selected_console is console)) or Suspended(),
-    )
-
-    choice = select_permission_choice(
-        PermissionPrompt("write_file", "workspace", "workspace:def"),
-        console=console,
-        read_key=lambda: next(keys),
-    )
-
-    assert choice is PromptChoice.DENY
-    assert events == ["True", "enter", "exit"]
-
-
 def test_permission_prompt_fails_closed_on_eof() -> None:
     choice = select_permission_choice(
         PermissionPrompt("write_file", "workspace", "workspace:def"),
@@ -230,9 +124,9 @@ def test_permission_prompt_rejects_invalid_timeout(timeout_seconds: float) -> No
 
 
 def test_permission_prompt_escape_interrupts_turn() -> None:
-    from litecoder.ui.input import InputInterrupt
+    from litecoder.ui.permissions import PermissionInputInterrupt
 
-    with pytest.raises(InputInterrupt) as error:
+    with pytest.raises(PermissionInputInterrupt) as error:
         select_permission_choice(
             PermissionPrompt("run_shell", "external", "external:def"),
             console=Console(file=StringIO(), force_terminal=True, color_system=None),
@@ -243,12 +137,12 @@ def test_permission_prompt_escape_interrupts_turn() -> None:
 
 
 def test_permission_prompt_ctrl_c_interrupts_turn() -> None:
-    from litecoder.ui.input import InputInterrupt
+    from litecoder.ui.permissions import PermissionInputInterrupt
 
     def interrupt() -> str:
         raise KeyboardInterrupt
 
-    with pytest.raises(InputInterrupt) as error:
+    with pytest.raises(PermissionInputInterrupt) as error:
         select_permission_choice(
             PermissionPrompt("run_shell", "external", "external:def"),
             console=Console(file=StringIO(), force_terminal=True, color_system=None),
