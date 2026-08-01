@@ -13,7 +13,6 @@ DatasetSelection = DatasetName | tuple[DatasetName, ...]
 CaseStatus = Literal["passed", "failed", "infra_error", "invalid"]
 RunStatus = Literal["completed", "completed_with_infra_errors", "interrupted"]
 MetricScalar = float | int | str
-CandidateTopology = Literal["default", "subagent", "team"]
 FeatureToggle = Literal["default", "enabled", "disabled"]
 CASE_STATUSES = {"passed", "failed", "infra_error", "invalid"}
 RUN_STATUSES = {"completed", "completed_with_infra_errors", "interrupted"}
@@ -26,7 +25,6 @@ class EvalMode(StrEnum):
     TOOLS_HOOKS = "tools-hooks"
     MEMORY = "memory"
     TASK_STATE = "task-state"
-    MULTI_AGENT = "multi-agent"
 
 
 class CaseStage(StrEnum):
@@ -134,7 +132,6 @@ class ExecutionCandidate:
     """Data model representing the execution candidate."""
     name: str
     prompt: str
-    topology: CandidateTopology = "default"
     setup_prompt: str = ""
     restart_after_setup: bool = False
     context_compaction: FeatureToggle = "default"
@@ -145,8 +142,6 @@ class ExecutionCandidate:
     def __post_init__(self) -> None:
         _non_empty(self.name, "candidate name")
         _non_empty(self.prompt, "candidate prompt")
-        if self.topology not in {"default", "subagent", "team"}:
-            raise ValueError(f"unsupported candidate topology: {self.topology}")
         if not isinstance(self.setup_prompt, str):
             raise ValueError("candidate setup prompt must be text")
         if self.setup_prompt and not self.setup_prompt.strip():

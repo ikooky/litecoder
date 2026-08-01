@@ -202,7 +202,7 @@ class TaskCompleteTool(_TaskTransitionTool):
     action = "complete"
     description = "Completed task."
     spec = ToolSpec(
-        "task_complete", "Mark the current agent's durable task completed only after its requested outcome and relevant validation are finished; report unresolved work instead.",
+        "task_complete", "Mark the current agent's durable task completed only after its requested outcome and relevant validation are finished; send the evidence to the lead when delegated and report unresolved work instead.",
         {"type": "object", "properties": {"id": _TASK_ID_SCHEMA}, "required": ["id"], "additionalProperties": False},
         False, concurrency="exclusive", permission_risk="safe", dedupe_policy="none",
     )
@@ -213,7 +213,7 @@ class TaskFailTool(_TaskTransitionTool):
     action = "fail"
     description = "Marked task failed."
     spec = ToolSpec(
-        "task_fail", "Mark the current agent's durable task failed when a blocker, failed validation, or missing authority prevents completion. Preserve the failure for recovery instead of marking success.",
+        "task_fail", "Mark the current agent's durable task failed when a blocker, failed validation, or missing authority prevents completion. Include the confirmed blocker or validation evidence and preserve the failure for recovery instead of marking success.",
         {"type": "object", "properties": {"id": _TASK_ID_SCHEMA}, "required": ["id"], "additionalProperties": False},
         False, concurrency="exclusive", permission_risk="safe", dedupe_policy="none",
     )

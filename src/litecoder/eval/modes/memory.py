@@ -76,7 +76,7 @@ class MemoryMode(EvalModePlugin):
         metrics = {
             name: Metric(name, item.value, item.unit)
             for name, item in execution.metrics.items()
-            if name not in {"candidate_name", "candidate_topology"}
+            if name != "candidate_name"
         }
         metrics["memory_marker_retained"] = metric(
             "memory_marker_retained", marker_retained
@@ -295,11 +295,10 @@ def _setup_prompt(spec: CaseSpec, *, distractors: bool) -> str:
 def _continuation_prompt() -> str:
     return (
         "Continue the benchmark task I asked you to remember in the previous session. "
-        "Retrieve and use the relevant durable memory named evalplus-current-task; "
-        "do not assume its contents if it was not recalled. Inspect the existing "
-        "solution.py as needed and implement the solution now. Add the exact "
-        "remembered marker as a Python comment in solution.py, but do not apply "
-        "markers from unrelated memories."
+        "Use the durable constraint that applies to this coding task, inspect the "
+        "existing solution.py as needed, and implement the solution now. Add the exact "
+        "remembered marker as a Python comment in solution.py, but do not apply markers "
+        "from unrelated memories."
     )
 
 

@@ -17,8 +17,6 @@ from litecoder.eval.domain import (
 from litecoder.eval.execution import (
     RuntimeCaseExecutor,
     _allow_eval_permission,
-    _allow_multi_agent_permission,
-    _cleanup_eval_worktrees,
     _copy_trace,
     _execution_failure,
     _path_in_root,
@@ -71,63 +69,11 @@ def test_eval_permissions_only_allow_solution_and_test_runners(tmp_path: Path) -
     ) is PromptChoice.DENY
 
 
-def test_multi_agent_permissions_add_only_required_coordination(tmp_path: Path) -> None:
-    assert _allow_multi_agent_permission(
-        _prompt(
-            "spawn_subagent",
-            "high",
-            {"task_id": "worker", "worktree_id": "worker"},
-            tmp_path,
-        )
-    ) is PromptChoice.ALLOW_ONCE
-    assert _allow_multi_agent_permission(
-        _prompt(
-            "worktree_create",
-            "workspace",
-            {"task_id": "worker", "branch": "eval-worker"},
-            tmp_path,
-        )
-    ) is PromptChoice.ALLOW_ONCE
-    assert _allow_multi_agent_permission(
-        _prompt(
-            "team_create",
-            "high",
-            {
-                "display_name": "worker",
-                "objective": "solve",
-                "tools": ["read_file"],
-                "budget": {"max_rounds": 2, "max_tool_calls": 4},
-            },
-            tmp_path,
-        )
-    ) is PromptChoice.ALLOW_ONCE
-    assert _allow_multi_agent_permission(
-        _prompt("worktree_remove", "high", {"id": "worker"}, tmp_path)
-    ) is PromptChoice.DENY
-
-
 def test_candidate_workspace_cannot_traverse_to_sibling(tmp_path: Path) -> None:
     team_workspace = tmp_path / "candidates" / "team" / "execution"
     team_workspace.mkdir(parents=True)
 
     assert not _path_in_root(team_workspace, "../../subagent/execution/solution.py")
-
-
-@pytest.mark.asyncio
-async def test_cleanup_eval_worktrees_removes_only_managed_bindings() -> None:
-    removed: list[tuple[object, bool]] = []
-    bindings = (object(), object())
-
-    class Worktrees:
-        async def list(self) -> tuple[object, ...]:
-            return bindings
-
-        async def remove(self, binding: object, *, discard: bool) -> None:
-            removed.append((binding, discard))
-
-    await _cleanup_eval_worktrees(SimpleNamespace(worktree_manager=Worktrees()))
-
-    assert removed == [(binding, True) for binding in bindings]
 
 
 def test_copy_trace_merges_root_and_child_session_traces(tmp_path: Path) -> None:
@@ -309,11 +255,11 @@ async def test_runtime_executor_omits_unbounded_eval_budget_override(
         "humaneval",
         "answer",
         "def answer():\n",
-        "multi-agent",
+        "agent-benchmark",
     )
     paths = prepare_case(tmp_path / "run", spec)
     policy = ExecutionPolicy(
-        frozenset({"*"}),
+        frozenset({"read_file"}),
         max_rounds=None,
         max_tokens=None,
     )

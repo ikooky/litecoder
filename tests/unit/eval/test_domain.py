@@ -42,28 +42,30 @@ def test_execution_policy_rejects_empty_tools() -> None:
         ExecutionPolicy(frozenset())
 
 
-def test_multi_agent_policy_has_explicit_runtime_budgets() -> None:
-    policy = policy_for_mode("multi-agent")
+@pytest.mark.parametrize(
+    "mode",
+    (
+        "agent-benchmark",
+        "context-manager",
+        "tools-hooks",
+        "memory",
+        "task-state",
+    ),
+)
+def test_eval_modes_use_production_runtime_budgets(mode: str) -> None:
+    policy = policy_for_mode(mode)
 
-    assert policy.max_rounds == 96
-    assert policy.max_tokens == 400_000
+    assert policy.max_rounds is None
+    assert policy.max_tokens is None
 
 
-def test_context_manager_policy_allows_compaction_recovery() -> None:
-    policy = policy_for_mode("context-manager")
-
-    assert policy.max_rounds == 32
-    assert policy.max_tokens == 120_000
-
-
-def test_all_six_modes_are_registered() -> None:
+def test_all_five_modes_are_registered() -> None:
     names = (
         "agent-benchmark",
         "context-manager",
         "tools-hooks",
         "memory",
         "task-state",
-        "multi-agent",
     )
 
     assert tuple(mode_plugin(name).name for name in names) == names

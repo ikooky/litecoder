@@ -39,12 +39,15 @@ class TeamCreateTool:
     """Component responsible for the team create tool."""
     spec = ToolSpec(
         "team_create",
-        "Create a bounded teammate only for independently scoped work that benefits from active coordination. Provide a complete objective, least-privilege tools, budget, and a durable task or worktree when needed; do not create a team for trivial sequential work.",
+        "Create a bounded teammate only for independently scoped work that benefits from active coordination. Provide a self-contained objective with relevant paths, least-privilege tools, expected result, validation standard, and a durable task or worktree when needed. For task/worktree-bound work, omit budget so the teammate inherits the caller's production authority; do not choose a small budget that leaves no room for validation and task completion. Do not create a team for trivial sequential work.",
         {
             "type": "object",
             "properties": {
                 "display_name": {"type": "string"},
-                "objective": {"type": "string"},
+                "objective": {
+                    "type": "string",
+                    "description": "Self-contained objective: include relevant paths or symbols, allowed scope, expected result, and how the teammate should validate and report it.",
+                },
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -75,7 +78,7 @@ class TeamCreateTool:
                     "description": "ID returned by worktree_create for task_id.",
                 },
             },
-            "required": ["display_name", "objective", "tools", "budget"],
+            "required": ["display_name", "objective", "tools"],
             "additionalProperties": False,
         },
         mutates_workspace=False,
@@ -109,7 +112,17 @@ class TeamCreateTool:
         objective = _required_str(call.arguments.get("objective"), "objective")
         tools = _string_collection(call.arguments.get("tools"), "tools")
         budget = call.arguments.get("budget")
-        if not isinstance(budget, dict):
+        if budget is None:
+            max_rounds = caller.authority.max_rounds
+            max_tool_calls = caller.authority.max_tool_calls
+        elif isinstance(budget, dict):
+            max_rounds = _positive_int(
+                budget.get("max_rounds"), "budget.max_rounds"
+            )
+            max_tool_calls = _positive_int(
+                budget.get("max_tool_calls"), "budget.max_tool_calls"
+            )
+        else:
             raise ToolFailure(
                 "Invalid teammate arguments", metadata={"field": "budget"}
             )
@@ -158,12 +171,8 @@ class TeamCreateTool:
             workspace_id=workspace_id,
             permission_mode=caller.authority.permission_mode,
             task_ids=frozenset({task_id}) if task_id else frozenset(),
-            max_rounds=_positive_int(
-                budget.get("max_rounds"), "budget.max_rounds"
-            ),
-            max_tool_calls=_positive_int(
-                budget.get("max_tool_calls"), "budget.max_tool_calls"
-            ),
+            max_rounds=max_rounds,
+            max_tool_calls=max_tool_calls,
         )
         request = ChildAgentRequest(
             objective,

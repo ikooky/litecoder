@@ -25,7 +25,7 @@ class RunShellTool:
     """Component responsible for the run shell tool."""
     spec = ToolSpec(
         "run_shell",
-        "Run one bounded argv-only command inside the workspace, primarily for tests, builds, package operations, or commands without a dedicated tool. Prefer structured file, search, and Git tools for those operations; inspect failures before retrying.",
+        "Run one bounded argv-only command inside the workspace, primarily for tests, builds, package operations, or commands without a dedicated tool. Do not use it for file, search, or Git inspection when a structured tool exists; inspect failures or denials before choosing a different command and never replay an identical rejected call.",
         {
             "type": "object",
             "properties": {

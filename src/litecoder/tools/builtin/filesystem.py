@@ -29,7 +29,7 @@ class ReadFileTool:
     """Component responsible for the read file tool."""
     spec = ToolSpec(
         "read_file",
-        "Read a workspace-relative UTF-8 file after identifying a relevant path; use offsets for focused inspection.",
+        "Read a workspace-relative UTF-8 file after identifying a relevant path and before proposing or editing a change; use offsets for focused inspection and do not infer uninspected content.",
         {
             "type": "object",
             "properties": {
@@ -94,7 +94,7 @@ class WriteFileTool:
     """Component responsible for the write file tool."""
     spec = ToolSpec(
         "write_file",
-        "Create or replace a workspace-relative UTF-8 file atomically. Use for a new file or deliberate full replacement; inspect existing files first and prefer edit_file for a localized change.",
+        "Create or replace a workspace-relative UTF-8 file atomically. Use for a new file or deliberate full replacement only after inspecting an existing file; prefer edit_file for a localized change and do not overwrite unrelated user work.",
         {
             "type": "object",
             "properties": {"path": _PATH_SCHEMA, "content": {"type": "string"}},
@@ -134,7 +134,7 @@ class EditFileTool:
     """Component responsible for the edit file tool."""
     spec = ToolSpec(
         "edit_file",
-        "Make a targeted exact replacement in an existing workspace-relative UTF-8 file. Read the current content first, preserve surrounding conventions, and use replace_all only when every occurrence is intended.",
+        "Make a targeted exact replacement in an existing workspace-relative UTF-8 file. Read the current content first, preserve surrounding conventions, use replace_all only when every occurrence is intended, and validate the resulting behavior afterward.",
         {
             "type": "object",
             "properties": {

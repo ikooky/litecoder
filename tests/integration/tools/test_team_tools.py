@@ -385,7 +385,7 @@ async def test_team_tool_contracts_and_registration(tmp_path: Path) -> None:
     }
     assert all(tool.spec.dedupe_policy == "none" for tool in registry.list())
     create = registry.require("team_create")
-    assert create.spec.input_schema["required"] == ["display_name", "objective", "tools", "budget"]
+    assert create.spec.input_schema["required"] == ["display_name", "objective", "tools"]
     assert create.spec.input_schema["properties"]["budget"] == {"type": "object", "properties": {"max_rounds": {"type": "integer", "minimum": 1}, "max_tool_calls": {"type": "integer", "minimum": 1}}, "required": ["max_rounds", "max_tool_calls"], "additionalProperties": False}
 
     with pytest.raises(ToolFailure):
@@ -400,6 +400,29 @@ async def test_team_tool_contracts_and_registration(tmp_path: Path) -> None:
     assert json.loads(received.content)[0]["sender"] == "explicit-sender"
     listed = await registry.require("team_list").execute(ToolCall("list", "team_list", {}), context(tmp_path))
     assert isinstance(json.loads(listed.content), list)
+
+
+@pytest.mark.asyncio
+async def test_team_create_inherits_parent_budget_when_omitted(tmp_path: Path) -> None:
+    manager = TeamManager(FactoryDouble())
+    create = TeamCreateTool(manager, caller_resolver=lambda _: caller())
+
+    result = await create.execute(
+        ToolCall(
+            "inherit-budget",
+            "team_create",
+            {
+                "display_name": "reviewer",
+                "objective": "inspect",
+                "tools": ["read_file"],
+            },
+        ),
+        context(tmp_path),
+    )
+
+    assert result.status == "success"
+    assert manager.factory.calls[0].authority.max_rounds == 8
+    assert manager.factory.calls[0].authority.max_tool_calls == 16
 
 
 @pytest.mark.asyncio

@@ -202,6 +202,30 @@ async def test_spawn_subagent_tool_builds_restricted_request(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_spawn_subagent_tool_inherits_parent_budget_when_omitted(
+    tmp_path,
+) -> None:
+    child_runtime = RuntimeDouble("child-session")
+    factory = FactoryDouble(child_runtime)
+    manager = SubagentManager(factory)
+    lead = AgentCaller("lead", "lead-session", full_authority())
+    tool = SpawnSubagentTool(manager, caller_resolver=lambda context: lead)
+
+    result = await tool.execute(
+        ToolCall(
+            "call-8",
+            "spawn_subagent",
+            {"objective": "read only", "tools": ["read_file"]},
+        ),
+        ToolContext("lead-session", "workspace-1", tmp_path),
+    )
+
+    assert result.status == "success"
+    assert factory.requests[0].authority.max_rounds == 10
+    assert factory.requests[0].authority.max_tool_calls == 20
+
+
+@pytest.mark.asyncio
 async def test_subagent_result_contains_the_child_final_text() -> None:
     class StoreDouble:
         async def load_context(self, session_id: str) -> object:

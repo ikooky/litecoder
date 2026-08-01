@@ -7,7 +7,6 @@ from litecoder.eval.modes.agent_benchmark import AgentBenchmarkMode
 from litecoder.eval.modes.base import EvalModePlugin
 from litecoder.eval.modes.context_manager import ContextManagerMode
 from litecoder.eval.modes.memory import MemoryMode
-from litecoder.eval.modes.multi_agent import MultiAgentMode
 from litecoder.eval.modes.task_state import TaskStateMode
 from litecoder.eval.modes.tools_hooks import ToolsHooksMode
 
@@ -18,7 +17,6 @@ _MODES: dict[EvalMode, EvalModePlugin] = {
     EvalMode.TOOLS_HOOKS: ToolsHooksMode(),
     EvalMode.MEMORY: MemoryMode(),
     EvalMode.TASK_STATE: TaskStateMode(),
-    EvalMode.MULTI_AGENT: MultiAgentMode(),
 }
 
 

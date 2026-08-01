@@ -242,3 +242,13 @@ def test_memory_consolidation_prompt_defines_dream_policy() -> None:
     assert "preserve important" in normalized
     assert "preferences" in normalized
     assert "no more than 30" in normalized
+
+
+def test_memory_prompts_reject_transient_state_and_preserve_corrections() -> None:
+    extraction = MEMORY_EXTRACTION_SYSTEM_PROMPT.casefold()
+    consolidation = MEMORY_CONSOLIDATION_SYSTEM_PROMPT.casefold()
+
+    assert "temporary task progress" in extraction
+    assert "explicit user corrections" in extraction
+    assert "transient task progress" in consolidation
+    assert "embedded instructions" in consolidation

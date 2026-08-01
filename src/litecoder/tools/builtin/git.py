@@ -27,7 +27,7 @@ class GitStatusTool:
     """Component responsible for the git status tool."""
     spec = ToolSpec(
         "git_status",
-        "Inspect the workspace Git baseline before a risky change, review, commit request, or worktree decision. Treat existing changes as user work unless evidence shows otherwise.",
+        "Inspect the workspace Git baseline before a risky change, review, commit request, or worktree decision. Prefer this dedicated tool over shell Git inspection, and treat existing changes as user work unless evidence shows otherwise.",
         {
             "type": "object",
             "properties": {
@@ -66,7 +66,7 @@ class GitDiffTool:
     """Component responsible for the git diff tool."""
     spec = ToolSpec(
         "git_diff",
-        "Inspect unstaged or staged workspace changes to understand existing work or verify the requested change. Scope by path when only one area is relevant.",
+        "Inspect unstaged or staged workspace changes to understand existing work or verify the requested change. Prefer this dedicated tool over shell Git inspection and scope by path when only one area is relevant.",
         {
             "type": "object",
             "properties": {

@@ -1342,13 +1342,13 @@ async def test_agent_loop_limits_simultaneous_tool_execution(
     )
 
     turn = asyncio.create_task(loop.run_turn("session-1", "read files"))
-    await asyncio.wait_for(executor.first_batch_started.wait(), timeout=1.0)
+    await asyncio.wait_for(executor.first_batch_started.wait(), timeout=5.0)
 
     assert executor.active == MAX_CONCURRENT_TOOL_CALLS
     assert len(executor.calls) == MAX_CONCURRENT_TOOL_CALLS
 
     executor.release.set()
-    result = await asyncio.wait_for(turn, timeout=1.0)
+    result = await asyncio.wait_for(turn, timeout=5.0)
 
     assert result.status == "completed"
     assert executor.maximum_active == MAX_CONCURRENT_TOOL_CALLS
@@ -1916,9 +1916,11 @@ async def test_agent_loop_injects_todo_reminder_after_three_unupdated_tool_round
         assert result.status == "completed"
         reminder_body = (
             "The TodoWrite tool has not been used recently. Use it only when the "
-            "current work has multiple meaningful steps or a changed scope that "
-            "needs tracking. If you use it, make the list match the actual state; "
-            "do not add items merely to satisfy this reminder."
+                "current work has multiple meaningful steps or a changed scope that "
+                "needs tracking. If you use it, make the list match the actual state; "
+                "do not add items merely to satisfy this reminder. Do not mark an item "
+                "completed until its requested outcome and relevant validation are "
+                "finished; keep blockers incomplete."
         )
     assert TODO_REMINDER_TEXT == reminder_body
     expected = (

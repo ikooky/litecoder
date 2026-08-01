@@ -234,6 +234,7 @@ class EvalOrchestrator:
             candidate,
         )
         process_values = capture_execution(candidate_paths, spec, executed.events)
+        persisted_solution = candidate_paths.solution.read_text(encoding="utf-8")
         execution_metrics = dict(executed.execution.metrics)
         execution_metrics.update(
             {name: Metric(name, value) for name, value in process_values.items()}
@@ -243,6 +244,7 @@ class EvalOrchestrator:
         )
         execution = replace(
             executed.execution,
+            solution=persisted_solution,
             metrics=execution_metrics,
             failure=_candidate_failure(candidate.name, executed.execution.failure),
         )
@@ -255,7 +257,7 @@ class EvalOrchestrator:
         )
         write_mode_evidence(candidate_paths, dict(measurement.evidence))
         validation, validation_output, validation_error = _validate(
-            self.validator, spec, execution.solution
+            self.validator, spec, persisted_solution
         )
         write_validation(candidate_paths, validation, validation_output)
         metrics["validation_evidence_ready"] = Metric(

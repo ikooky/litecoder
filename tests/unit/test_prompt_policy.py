@@ -17,10 +17,18 @@ def test_core_policy_defines_priority_workflow_and_completion_contract() -> None
         "runtime and tool constraints",
         "information, review, or planning request",
         "preserve unrelated user changes",
+        "read the relevant existing files before",
+        "do not broaden semantics",
+        "do not repeat the identical call blindly",
+        "before reporting completion",
+        "self-contained objective",
+        "synthesize the concrete next instruction",
         "do not claim an action",
         "at most one active item",
+        "omit it so the child inherits the caller's production authority",
         "destructive filesystem or git operations",
         "validation",
+        "report failures and unverified work faithfully",
     ):
         assert rule in policy
 

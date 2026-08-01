@@ -49,7 +49,7 @@ class GlobFilesTool:
     """Component responsible for the glob files tool."""
     spec = ToolSpec(
         "glob_files",
-        "Discover workspace files by relative glob when the exact path is unknown; narrow the pattern before reading or editing files.",
+        "Discover workspace files by relative glob when the exact path is unknown; narrow the pattern before reading or editing files and use this instead of shell-based file discovery.",
         {
             "type": "object",
             "properties": {
@@ -162,7 +162,7 @@ class SearchTextTool:
     """Component responsible for the search text tool."""
     spec = ToolSpec(
         "search_text",
-        "Locate definitions, usages, or relevant text in workspace files. Prefer literal search; enable regex only when its semantics are required and scope it with glob when possible.",
+        "Locate definitions, usages, or relevant text in workspace files. Prefer literal search; enable regex only when its semantics are required, scope it with glob when possible, and use this instead of shell grep or rg.",
         {
             "type": "object",
             "properties": {

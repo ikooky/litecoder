@@ -26,8 +26,10 @@ TODO_WRITE_DESCRIPTION = (
     "accurate before extended work. Keep at most one item in_progress, update it "
     "when work changes state, and reconcile it before the final response. Complete "
     "an item only when its outcome and relevant validation are finished; keep "
-    "blocked or failed work incomplete and track the blocker. Remove irrelevant "
-    "items. content must be an imperative action and active_form its "
+    "blocked or failed work incomplete and track the blocker. Do not mark an item "
+    "complete merely because a file was edited; its requested outcome and relevant "
+    "validation must be finished. Remove irrelevant items. content must be an "
+    "imperative action and active_form its "
     "present-continuous form."
 )
 TODO_WRITE_SUCCESS_TEXT = (

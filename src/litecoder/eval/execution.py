@@ -25,7 +25,6 @@ from litecoder.eval.domain import (
 from litecoder.hooks import HookEnvelope, HookManager, HookOutcome, HookPoint
 from litecoder.providers.registry import close_default_async_clients
 from litecoder.tasks.models import TaskCreate, TaskStatus
-from litecoder.tasks.worktrees import run_git
 from litecoder.tools.permission import PermissionPrompt, PromptChoice
 from litecoder.ui.events import RuntimeUIEvent, UIEventType
 from litecoder.ui.sink import CompositeUISink, RecordingUISink, RuntimeUISink, flush_ui
@@ -77,22 +76,16 @@ class RuntimeCaseExecutor:
     ) -> ExecutedCase:
         """Execute the requested tool call."""
         selected = candidate or ExecutionCandidate("primary", spec.prompt())
-        if selected.topology != "default":
-            await _ensure_eval_git_workspace(paths.solution.parent)
         outcome, events, runtime_state = await self._run_once(
             selected.prompt,
             paths.solution.parent,
             paths.trace,
             policy,
             mode=spec.mode,
-            topology=selected.topology,
             candidate=selected,
         )
         metrics = dict(outcome.metrics)
         metrics["candidate_name"] = Metric("candidate_name", selected.name)
-        metrics["candidate_topology"] = Metric(
-            "candidate_topology", selected.topology
-        )
         metrics.update(
             {
                 name: Metric(name, value)
@@ -121,7 +114,6 @@ class RuntimeCaseExecutor:
         policy: ExecutionPolicy,
         *,
         mode: str,
-        topology: str = "default",
         candidate: ExecutionCandidate | None = None,
     ) -> tuple[
         AgentExecution,
@@ -144,7 +136,7 @@ class RuntimeCaseExecutor:
         runtime_options: dict[str, object] = {
             "ui_sink": ui_sink,
             "isolated_workspace": True,
-            "permission_prompt": _permission_prompt_for(mode, topology),
+            "permission_prompt": _permission_prompt_for(mode),
             "hook_registrar": (
                 _register_eval_hooks if mode == "tools-hooks" else None
             ),
@@ -239,20 +231,13 @@ class RuntimeCaseExecutor:
                 )
             except Exception as error:
                 run_error = error
-            if topology != "default":
-                runtime_state.update(
-                    await _runtime_multi_agent_state(runtime, topology)
-                )
         finally:
             session_ids = _trace_session_ids(runtime, result, recording.events)
             try:
                 await runtime.close()
             finally:
                 try:
-                    try:
-                        _copy_trace(runtime, session_ids, trace_path)
-                    finally:
-                        await _cleanup_eval_worktrees(runtime)
+                    _copy_trace(runtime, session_ids, trace_path)
                 finally:
                     try:
                         await close_default_async_clients()
@@ -538,24 +523,10 @@ def _allow_eval_permission(prompt: object) -> PromptChoice:
     return PromptChoice.DENY
 
 
-def _permission_prompt_for(
-    mode: str, topology: str
-) -> Callable[[object], PromptChoice]:
-    if topology != "default":
-        return _allow_multi_agent_permission
+def _permission_prompt_for(mode: str) -> Callable[[object], PromptChoice]:
     if mode == "memory":
         return _allow_memory_eval_permission
     return _allow_eval_permission
-
-
-def _allow_multi_agent_permission(prompt: object) -> PromptChoice:
-    if not isinstance(prompt, PermissionPrompt):
-        return PromptChoice.DENY
-    if prompt.tool_name == "worktree_create" and prompt.risk == "workspace":
-        return PromptChoice.ALLOW_ONCE
-    if prompt.tool_name in {"spawn_subagent", "team_create"} and prompt.risk == "high":
-        return PromptChoice.ALLOW_ONCE
-    return _allow_eval_permission(prompt)
 
 
 def _allow_memory_eval_permission(prompt: object) -> PromptChoice:
@@ -640,161 +611,6 @@ def _register_eval_hooks(hooks: HookManager) -> None:
     hooks.register(HookPoint.PRE_TOOL_USE, pass_through, name="eval-pre-tool-use")
     hooks.register(HookPoint.POST_TOOL_USE, pass_through, name="eval-post-tool-use")
     hooks.register(HookPoint.TOOL_ERROR, pass_through, name="eval-tool-error")
-
-
-async def _ensure_eval_git_workspace(workspace: Path) -> None:
-    if (workspace / ".git").exists():
-        return
-    for arguments in (
-        ("init",),
-        ("config", "user.email", "litecoder-eval@example.invalid"),
-        ("config", "user.name", "LiteCoder Eval"),
-        ("add", "--", "solution.py"),
-        ("commit", "-m", "Initialize multi-agent evaluation workspace"),
-    ):
-        result = await run_git(workspace, *arguments)
-        if result.returncode != 0:
-            raise RuntimeError("multi-agent evaluation requires a Git workspace")
-
-
-async def _cleanup_eval_worktrees(runtime: object) -> None:
-    """Remove worktrees created by a completed evaluation case only."""
-    manager = getattr(runtime, "worktree_manager", None)
-    if manager is None:
-        return
-    list_worktrees = getattr(manager, "list", None)
-    remove_worktree = getattr(manager, "remove", None)
-    if not callable(list_worktrees) or not callable(remove_worktree):
-        return
-    bindings = list_worktrees()
-    if asyncio.iscoroutine(bindings):
-        bindings = await bindings
-    if not isinstance(bindings, (list, tuple)):
-        return
-    for binding in bindings:
-        removed = remove_worktree(binding, discard=True)
-        if asyncio.iscoroutine(removed):
-            await removed
-
-
-async def _runtime_multi_agent_state(
-    runtime: object, topology: str
-) -> dict[str, float | int | str]:
-    if topology == "subagent":
-        return await _runtime_subagent_state(runtime)
-    if topology == "team":
-        return await _runtime_team_state(runtime)
-    return {"closed_loop_valid": 0}
-
-
-async def _runtime_subagent_state(runtime: object) -> dict[str, float | int | str]:
-    manager = getattr(runtime, "subagent_manager", None)
-    history = getattr(manager, "spawn_history", ())
-    if not isinstance(history, (list, tuple)):
-        history = ()
-    tasks = await _service_list(getattr(runtime, "task_manager", None))
-    worktrees = await _service_list(getattr(runtime, "worktree_manager", None))
-    agent_ids = {
-        item.get("agent_id")
-        for item in history
-        if isinstance(item, dict)
-        and isinstance(item.get("agent_id"), str)
-        and item.get("agent_id")
-    }
-    completed = [task for task in tasks if _task_status(task) == "completed"]
-    owned_completed = [
-        task
-        for task in completed
-        if getattr(task, "owner_agent_id", None) in agent_ids
-        and isinstance(getattr(task, "worktree_id", None), str)
-    ]
-    returned = sum(
-        item.get("result_returned") == 1 for item in history if isinstance(item, dict)
-    )
-    closed = bool(history and returned and owned_completed and worktrees)
-    return {
-        "agent_count": len(history),
-        "task_count": len(tasks),
-        "completed_task_count": len(completed),
-        "owned_completed_task_count": len(owned_completed),
-        "worktree_count": len(worktrees),
-        "results_returned": returned,
-        "closed_loop_valid": int(closed),
-    }
-
-
-async def _runtime_team_state(runtime: object) -> dict[str, float | int | str]:
-    team = getattr(runtime, "team_manager", None)
-    tasks = await _service_list(getattr(runtime, "task_manager", None))
-    worktrees = await _service_list(getattr(runtime, "worktree_manager", None))
-    members = getattr(team, "last_turn_members", ())
-    if not isinstance(members, (list, tuple)):
-        members = ()
-    member_ids = {
-        member.get("agent_id")
-        for member in members
-        if isinstance(member, dict) and isinstance(member.get("agent_id"), str)
-    }
-    completed_tasks = [task for task in tasks if _task_status(task) == "completed"]
-    failed_tasks = [task for task in tasks if _task_status(task) == "failed"]
-    owned_completed = [
-        task
-        for task in completed_tasks
-        if getattr(task, "owner_agent_id", None) in member_ids
-        and isinstance(getattr(task, "worktree_id", None), str)
-    ]
-    distinct_owners = {
-        getattr(task, "owner_agent_id", None) for task in owned_completed
-    }
-    sent = getattr(team, "last_turn_messages_sent", 0)
-    received = getattr(team, "last_turn_messages_received", 0)
-    sent = sent if isinstance(sent, int) else 0
-    received = received if isinstance(received, int) else 0
-    worker_sent = getattr(team, "last_turn_worker_results_sent", 0)
-    worker_delivered = getattr(team, "last_turn_worker_results_delivered", 0)
-    peer_sent = getattr(team, "last_turn_peer_messages_sent", 0)
-    worker_sent = worker_sent if isinstance(worker_sent, int) else 0
-    worker_delivered = worker_delivered if isinstance(worker_delivered, int) else 0
-    peer_sent = peer_sent if isinstance(peer_sent, int) else 0
-    peer_valid = int(peer_sent > 0)
-    closed = bool(
-        len(members) >= 2
-        and len(distinct_owners) >= 2
-        and len(worktrees) >= 2
-        and sent
-        and received
-        and worker_sent >= 2
-        and worker_delivered >= 2
-        and peer_valid
-    )
-    return {
-        "agent_count": len(members),
-        "task_count": len(tasks),
-        "completed_task_count": len(completed_tasks),
-        "failed_task_count": len(failed_tasks),
-        "owned_completed_task_count": len(owned_completed),
-        "worktree_count": len(worktrees),
-        "messages_sent": sent,
-        "messages_received": received,
-        "worker_results_sent": worker_sent,
-        "worker_results_delivered": worker_delivered,
-        "peer_messages_sent": peer_sent,
-        "peer_communication_valid": peer_valid,
-        "closed_loop_valid": int(closed),
-    }
-
-
-async def _service_list(service: object) -> tuple[object, ...]:
-    method = getattr(service, "list", None)
-    if not callable(method):
-        return ()
-    try:
-        value = method()
-        if asyncio.iscoroutine(value):
-            value = await value
-    except Exception:
-        return ()
-    return tuple(value) if isinstance(value, (list, tuple)) else ()
 
 
 def _trace_session_ids(
@@ -970,8 +786,3 @@ def _execution_failure(
         normalized,
         reason or f"agent ended with status {status}",
     )
-
-
-def _task_status(task: object) -> object:
-    status = getattr(task, "status", None)
-    return getattr(status, "value", status)

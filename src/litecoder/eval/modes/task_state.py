@@ -53,7 +53,7 @@ class TaskStateMode(EvalModePlugin):
         metrics = {
             name: Metric(name, item.value, item.unit)
             for name, item in execution.metrics.items()
-            if name not in {"candidate_name", "candidate_topology"}
+            if name != "candidate_name"
         }
         metrics["lost_artifacts"] = metric(
             "lost_artifacts",

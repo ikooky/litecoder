@@ -43,10 +43,43 @@ class FakeExecutor:
         )
 
 
+class StaleExecutionExecutor:
+    async def execute(self, spec, paths, policy, candidate):
+        del spec, policy, candidate
+        persisted = "def answer():\n    return 42\n"
+        in_memory = "def answer():\n    return 41\n"
+        paths.solution.write_text(persisted, encoding="utf-8")
+        return ExecutedCase(
+            AgentExecution(
+                "completed",
+                "",
+                in_memory,
+                10,
+                5,
+                1.0,
+                {"budget_exhausted": Metric("budget_exhausted", 0)},
+            ),
+            (),
+        )
+
+
 class PassingValidator:
     def validate(self, spec, solution):
         assert spec.task_id == "HumanEval/0"
         assert "return 42" in solution
+        return ValidationCapture(
+            ValidationResult(True, "pass", "pass", 0, None, 0.1),
+            "passed\n",
+        )
+
+
+class RecordingValidator:
+    def __init__(self) -> None:
+        self.solution: str | None = None
+
+    def validate(self, spec, solution):
+        del spec
+        self.solution = solution
         return ValidationCapture(
             ValidationResult(True, "pass", "pass", 0, None, 0.1),
             "passed\n",
@@ -149,53 +182,6 @@ class ProviderFailureExecutor:
         )
 
 
-class MultiCandidateExecutor:
-    def __init__(self, *, subagent_closed: int = 1) -> None:
-        self.subagent_closed = subagent_closed
-        self.workspaces: dict[str, Path] = {}
-
-    async def execute(self, spec, paths, policy, candidate):
-        del spec, policy
-        self.workspaces[candidate.name] = paths.solution.parent
-        solution = (
-            "def answer():\n"
-            f"    return {42 if candidate.name == 'team' else 41}\n"
-        )
-        paths.solution.write_text(solution, encoding="utf-8")
-        closed = self.subagent_closed if candidate.name == "subagent" else 1
-        metrics = {
-            "input_tokens": Metric("input_tokens", 10),
-            "output_tokens": Metric("output_tokens", 5),
-            "wall_clock_seconds": Metric("wall_clock_seconds", 1.0),
-            "budget_exhausted": Metric("budget_exhausted", 0),
-            "candidate_name": Metric("candidate_name", candidate.name),
-            "candidate_topology": Metric(
-                "candidate_topology", candidate.topology
-            ),
-            "closed_loop_valid": Metric("closed_loop_valid", closed),
-        }
-        if candidate.name == "team":
-            metrics["peer_communication_valid"] = Metric(
-                "peer_communication_valid", 1
-            )
-        return ExecutedCase(
-            AgentExecution(
-                "completed", "", solution, 10, 5, 1.0, metrics
-            ),
-            (),
-        )
-
-
-class MultiPassingValidator:
-    def validate(self, spec, solution):
-        del spec
-        assert "return 4" in solution
-        return ValidationCapture(
-            ValidationResult(True, "pass", "pass", 0, None, 0.1),
-            "passed\n",
-        )
-
-
 @pytest.mark.asyncio
 async def test_orchestrator_runs_all_pipeline_stages(tmp_path: Path) -> None:
     report = await EvalOrchestrator(FakeExecutor(), PassingValidator()).run(
@@ -213,6 +199,24 @@ async def test_orchestrator_runs_all_pipeline_stages(tmp_path: Path) -> None:
     assert case.paths.mode_evidence.exists()
     assert report.guardrails["artifact_evidence_ready"].value == 1
     assert report.guardrails["artifact_evidence_ready_rate"].value == 1.0
+
+
+@pytest.mark.asyncio
+async def test_validation_uses_persisted_solution_artifact(
+    tmp_path: Path,
+) -> None:
+    validator = RecordingValidator()
+    report = await EvalOrchestrator(
+        StaleExecutionExecutor(), validator
+    ).run(
+        RunSpec("run-1", "agent-benchmark", "humaneval", tmp_path),
+        (EvalPlusTask("HumanEval/0", "def answer():\n", "answer", "humaneval"),),
+    )
+
+    persisted = "def answer():\n    return 42\n"
+    assert validator.solution == persisted
+    assert report.cases[0].execution.solution == persisted
+    assert report.cases[0].paths.solution.read_text(encoding="utf-8") == persisted
 
 
 @pytest.mark.asyncio
@@ -311,45 +315,3 @@ async def test_orchestrator_excludes_unrecovered_infrastructure_case_from_rate(
     assert report.primary_metrics["task_pass_rate"].value == 0.0
     assert report.guardrails["scoreable_case_count"].value == 0
     assert report.guardrails["infra_error_case_count"].value == 1
-
-
-@pytest.mark.asyncio
-async def test_multi_agent_runs_isolated_subagent_and_team_candidates(
-    tmp_path: Path,
-) -> None:
-    executor = MultiCandidateExecutor()
-    report = await EvalOrchestrator(executor, MultiPassingValidator()).run(
-        RunSpec("run-1", "multi-agent", "humaneval", tmp_path),
-        (EvalPlusTask("HumanEval/0", "def answer():\n", "answer", "humaneval"),),
-    )
-
-    case = report.cases[0]
-    assert case.status == "passed"
-    assert set(case.candidates) == {"subagent", "team"}
-    assert case.candidates["subagent"].validation.passed
-    assert case.candidates["team"].validation.passed
-    assert executor.workspaces["subagent"] != executor.workspaces["team"]
-    assert "subagent" in executor.workspaces["subagent"].parts
-    assert "team" in executor.workspaces["team"].parts
-    assert executor.workspaces["subagent"].parent.name == "subagent"
-    assert executor.workspaces["team"].parent.name == "team"
-    assert case.metrics["subagent_closed_loop_valid"].value == 1
-    assert case.metrics["team_peer_communication_valid"].value == 1
-    assert case.execution.solution.endswith("return 42\n")
-    assert case.paths.solution.read_text(encoding="utf-8").endswith("return 42\n")
-
-
-@pytest.mark.asyncio
-async def test_multi_agent_failure_names_the_failed_candidate_stage(
-    tmp_path: Path,
-) -> None:
-    report = await EvalOrchestrator(
-        MultiCandidateExecutor(subagent_closed=0), MultiPassingValidator()
-    ).run(
-        RunSpec("run-1", "multi-agent", "humaneval", tmp_path),
-        (EvalPlusTask("HumanEval/0", "def answer():\n", "answer", "humaneval"),),
-    )
-
-    case = report.cases[0]
-    assert case.status == "failed"
-    assert "subagent.closed_loop" in case.failure_reason

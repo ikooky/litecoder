@@ -72,7 +72,7 @@ class ContextManagerMode(EvalModePlugin):
         metrics = {
             name: Metric(name, item.value, item.unit)
             for name, item in execution.metrics.items()
-            if name not in {"candidate_name", "candidate_topology"}
+            if name != "candidate_name"
         }
         metrics["continuation_constraint_retained"] = metric(
             "continuation_constraint_retained", retained
@@ -295,9 +295,7 @@ def _setup_prompt(spec: CaseSpec) -> str:
 def _continuation_prompt(spec: CaseSpec) -> str:
     return (
         "Continue the task from the previous turn. Apply the retained constraints "
-        "and implement the requested function now. Use only read_file and edit_file "
-        "for this benchmark; do not run arbitrary shell commands or inspect files "
-        "outside solution.py.\n\n"
+        "and implement the requested function now.\n\n"
         f"{spec.prompt()}"
     )
 

@@ -89,7 +89,7 @@ def test_full_suite_uses_one_root_and_one_run_per_mode(
         Path(call["output_dir"]).resolve() == (suite_root / str(call["mode"])).resolve()
         for call in calls
     )
-    assert sum(len(call["tasks"]) for call in calls) == 72
+    assert sum(len(call["tasks"]) for call in calls) == 60
     assert all(call["tasks"] == calls[0]["tasks"] for call in calls)
     assert all(call["datasets"] == ("humaneval", "mbpp") for call in calls)
     assert all((suite_root / mode / "run.json").exists() for mode, _ in eval_suite.RUN_SPECS)
@@ -105,7 +105,7 @@ def test_full_suite_uses_one_root_and_one_run_per_mode(
     assert plan["task_scope"] == "shared-core"
     assert plan["unique_task_count"] == 12
     assert len(plan["shared_task_ids"]) == 12
-    assert plan["total_cases"] == 72
+    assert plan["total_cases"] == 60
     assert len(plan["runs"]) == len(eval_suite.RUN_SPECS)
     assert all(set(run) == {"datasets", "limit", "mode"} for run in plan["runs"])
 

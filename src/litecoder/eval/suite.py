@@ -30,7 +30,6 @@ RUN_SPECS: tuple[tuple[str, int], ...] = (
     ("tools-hooks", 12),
     ("memory", 12),
     ("task-state", 12),
-    ("multi-agent", 12),
 )
 DATASETS: tuple[DatasetName, ...] = ("humaneval", "mbpp")
 SHARED_DATASET_LIMITS: tuple[tuple[DatasetName, int], ...] = (

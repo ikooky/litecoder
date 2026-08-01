@@ -35,11 +35,14 @@ class SpawnSubagentTool:
     """Component responsible for the spawn subagent tool."""
     spec = ToolSpec(
         "spawn_subagent",
-        "Delegate only a bounded investigation or genuinely independent task. Give a normal child a precise objective, relevant context, scope, explicit tools, write authority, and expected deliverable. Use explore or plan for fixed read-only work and omit tools; do not delegate simple local inspection.",
+        "Delegate only a bounded investigation or genuinely independent task. Give a normal child a self-contained objective with relevant context, exact paths or symbols when known, scope, explicit tools, write authority, expected deliverable, and validation standard. For task/worktree-bound work, omit budget so the child inherits the caller's production authority; do not choose a small budget that leaves no room for validation and task completion. Use explore or plan for fixed read-only work and omit tools; do not delegate simple local inspection.",
         {
             "type": "object",
             "properties": {
-                "objective": {"type": "string"},
+                "objective": {
+                    "type": "string",
+                    "description": "Self-contained objective: include relevant paths or symbols, allowed scope, expected result, and how the child should validate and report it.",
+                },
                 "tools": {"type": "array", "items": {"type": "string"}},
                 "profile": {"type": "string", "enum": ["explore", "plan"]},
                 "budget": {
@@ -48,6 +51,7 @@ class SpawnSubagentTool:
                         "max_rounds": {"type": "integer", "minimum": 1},
                         "max_tool_calls": {"type": "integer", "minimum": 1},
                     },
+                    "required": ["max_rounds", "max_tool_calls"],
                 },
                 "task_id": {"type": "string"},
                 "worktree_id": {
@@ -55,7 +59,7 @@ class SpawnSubagentTool:
                     "description": "Opaque ID returned by worktree_create for task_id.",
                 },
             },
-            "required": ["objective", "budget"],
+            "required": ["objective"],
             "additionalProperties": False,
         },
         mutates_workspace=False,
@@ -166,14 +170,20 @@ async def _request_from_call(
     else:
         tools = tuple(sorted(profile_tools(profile) or ()))
     budget = call.arguments.get("budget")
-    if not isinstance(budget, dict):
-        raise ToolFailure("Invalid subagent arguments", metadata={"field": "budget"})
-    max_rounds = _positive_int(
-        budget.get("max_rounds"), "budget.max_rounds"
-    )
-    max_tool_calls = _positive_int(
-        budget.get("max_tool_calls"), "budget.max_tool_calls"
-    )
+    if budget is None:
+        max_rounds = caller.authority.max_rounds
+        max_tool_calls = caller.authority.max_tool_calls
+    elif isinstance(budget, dict):
+        max_rounds = _positive_int(
+            budget.get("max_rounds"), "budget.max_rounds"
+        )
+        max_tool_calls = _positive_int(
+            budget.get("max_tool_calls"), "budget.max_tool_calls"
+        )
+    else:
+        raise ToolFailure(
+            "Invalid subagent arguments", metadata={"field": "budget"}
+        )
     task_id = call.arguments.get("task_id")
     if task_id is not None and not isinstance(task_id, str):
         raise ToolFailure("Invalid subagent arguments", metadata={"field": "task_id"})
