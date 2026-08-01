@@ -564,7 +564,7 @@ def test_multi_agent_mode_reports_validation_workflow_peer_and_full_success(
         candidates={"subagent": subagent, "team": team},
     )
     successful_aggregate = MultiAgentMode().aggregate((successful_case,))
-    assert successful_aggregate.primary["team_vs_subagent_time_reduction"].value == 0.0
+    assert successful_aggregate.primary["team_vs_subagent_time_reduction"].value == "N/A"
     assert successful_aggregate.supporting["time_comparable_case_count"].value == 1
 
     failed_case = CaseReport(

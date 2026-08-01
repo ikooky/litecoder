@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import random
 import time
+import traceback
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -385,6 +386,7 @@ def _windows_untrusted_check(
     status = context.Value("i", 3)
     details = context.Array("b", [False for _ in input_values])
     supervision, worker_supervision = context.Pipe(duplex=False)
+    worker_errors: list[str] = []
     process = context.Process(
         target=_windows_evalplus_worker,
         args=(
@@ -416,6 +418,7 @@ def _windows_untrusted_check(
                 process,
                 supervision,
                 timeout + 1,
+                worker_errors=worker_errors,
             )
         except Exception as error:
             _stop_process(process)
@@ -439,6 +442,10 @@ def _windows_untrusted_check(
     if overall_timed_out:
         return TIMEOUT, [bool(value) for value in details[: progress.value]]
     if process.exitcode not in (0, None):
+        if worker_errors:
+            raise EvalPlusExecutionError(
+                "EvalPlus Windows worker failed: " + worker_errors[-1]
+            )
         raise EvalPlusExecutionError(
             f"EvalPlus Windows worker exited with code {process.exitcode}"
         )
@@ -468,6 +475,8 @@ def _monitor_windows_evalplus_worker(
     process: multiprocessing.Process,
     supervision: object,
     overall_timeout: float,
+    *,
+    worker_errors: list[str] | None = None,
 ) -> tuple[bool, bool]:
     overall_deadline = time.perf_counter() + overall_timeout
     input_deadline: float | None = None
@@ -501,13 +510,31 @@ def _monitor_windows_evalplus_worker(
                     ):
                         return True, False
                     input_deadline = None
+                elif event == "error" and worker_errors is not None:
+                    worker_errors.append(str(value))
                 try:
                     has_more = supervision.poll(0)  # type: ignore[attr-defined]
                 except (EOFError, OSError):
                     return _closed_supervision_result(process)
                 if not has_more:
                     break
+    _drain_worker_errors(supervision, worker_errors)
     return False, False
+
+
+def _drain_worker_errors(
+    supervision: object,
+    worker_errors: list[str] | None,
+) -> None:
+    if worker_errors is None:
+        return
+    try:
+        while supervision.poll(0):  # type: ignore[attr-defined]
+            event, value = supervision.recv()  # type: ignore[attr-defined]
+            if event == "error":
+                worker_errors.append(str(value))
+    except (EOFError, OSError):
+        return
 
 
 def _closed_supervision_result(
@@ -544,25 +571,27 @@ def _windows_evalplus_worker(
     progress: object,
     supervision: object,
 ) -> None:
-    import evalplus.eval as eval_module
-    from evalplus.eval import utils as eval_utils
-
-    def reliability_guard_without_resource(maximum_memory_bytes: int | None = None) -> None:
-        del maximum_memory_bytes
-        eval_utils.reliability_guard(None)
-
-    @contextmanager
-    def supervised_time_limit(seconds: float):
-        deadline = time.perf_counter() + float(seconds)
-        supervision.send(("start", deadline))  # type: ignore[attr-defined]
-        try:
-            yield
-        finally:
-            supervision.send(("end", time.perf_counter()))  # type: ignore[attr-defined]
-
-    eval_module.reliability_guard = reliability_guard_without_resource
-    eval_module.time_limit = supervised_time_limit
     try:
+        import evalplus.eval as eval_module
+        from evalplus.eval import utils as eval_utils
+
+        def reliability_guard_without_resource(
+            maximum_memory_bytes: int | None = None,
+        ) -> None:
+            del maximum_memory_bytes
+            eval_utils.reliability_guard(None)
+
+        @contextmanager
+        def supervised_time_limit(seconds: float):
+            deadline = time.perf_counter() + float(seconds)
+            supervision.send(("start", deadline))  # type: ignore[attr-defined]
+            try:
+                yield
+            finally:
+                supervision.send(("end", time.perf_counter()))  # type: ignore[attr-defined]
+
+        eval_module.reliability_guard = reliability_guard_without_resource
+        eval_module.time_limit = supervised_time_limit
         eval_module.unsafe_execute(
             dataset,
             entry_point,
@@ -576,6 +605,17 @@ def _windows_evalplus_worker(
             details,
             progress,
         )
+    except BaseException as error:
+        try:
+            supervision.send(  # type: ignore[attr-defined]
+                (
+                    "error",
+                    f"{type(error).__name__}: {error}\n{traceback.format_exc()}",
+                )
+            )
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+        raise
     finally:
         supervision.close()  # type: ignore[attr-defined]
 

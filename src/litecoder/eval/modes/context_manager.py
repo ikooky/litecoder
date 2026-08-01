@@ -97,13 +97,33 @@ class ContextManagerMode(EvalModePlugin):
     ) -> Mapping[str, Metric]:
         """Handle the combine metrics operation."""
         result = combined_candidate_metrics(candidates)
-        control_tokens = numeric_metric(
+        control_first_tokens = numeric_metric(
             candidates["control"].metrics,
             "continuation_first_request_input_tokens",
         )
-        treatment_tokens = numeric_metric(
+        treatment_first_tokens = numeric_metric(
             candidates["treatment"].metrics,
             "continuation_first_request_input_tokens",
+        )
+        control_continuation_tokens = _input_metric(
+            candidates["control"].metrics,
+            "continuation_total_input_tokens",
+            "continuation_input_tokens",
+        )
+        treatment_continuation_tokens = _input_metric(
+            candidates["treatment"].metrics,
+            "continuation_total_input_tokens",
+            "continuation_input_tokens",
+        )
+        control_full_run_tokens = _input_metric(
+            candidates["control"].metrics,
+            "total_recorded_input_tokens",
+            "input_tokens",
+        )
+        treatment_full_run_tokens = _input_metric(
+            candidates["treatment"].metrics,
+            "total_recorded_input_tokens",
+            "input_tokens",
         )
         compaction_exercised = int(
             numeric_metric(
@@ -112,13 +132,34 @@ class ContextManagerMode(EvalModePlugin):
             )
             >= 1
         )
+        first_reduction = (
+            1 - treatment_first_tokens / control_first_tokens
+            if compaction_exercised and control_first_tokens
+            else 0.0
+        )
+        continuation_reduction = (
+            1 - treatment_continuation_tokens / control_continuation_tokens
+            if compaction_exercised and control_continuation_tokens
+            else 0.0
+        )
+        full_run_reduction = (
+            1 - treatment_full_run_tokens / control_full_run_tokens
+            if compaction_exercised and control_full_run_tokens
+            else 0.0
+        )
+        result["first_request_input_token_reduction"] = metric(
+            "first_request_input_token_reduction", first_reduction
+        )
+        result["continuation_input_token_reduction"] = metric(
+            "continuation_input_token_reduction", continuation_reduction
+        )
+        result["full_run_input_token_reduction"] = metric(
+            "full_run_input_token_reduction", full_run_reduction
+        )
+        # Keep the old key as a compatibility alias. New reports use the
+        # full-run metric so a single request cannot overstate savings.
         result["paired_input_token_reduction"] = metric(
-            "paired_input_token_reduction",
-            (
-                1 - treatment_tokens / control_tokens
-                if compaction_exercised and control_tokens
-                else 0.0
-            ),
+            "paired_input_token_reduction", first_reduction
         )
         result["compaction_exercised"] = metric(
             "compaction_exercised",
@@ -142,6 +183,16 @@ class ContextManagerMode(EvalModePlugin):
                     "continuation_first_request_input_tokens": numeric_metric(
                         candidate.metrics,
                         "continuation_first_request_input_tokens",
+                    ),
+                    "continuation_total_input_tokens": _input_metric(
+                        candidate.metrics,
+                        "continuation_total_input_tokens",
+                        "continuation_input_tokens",
+                    ),
+                    "total_recorded_input_tokens": _input_metric(
+                        candidate.metrics,
+                        "total_recorded_input_tokens",
+                        "input_tokens",
                     ),
                     "context_compaction_count": numeric_metric(
                         candidate.metrics, "context_compaction_count"
@@ -190,8 +241,20 @@ class ContextManagerMode(EvalModePlugin):
                     "average_paired_input_token_reduction",
                     average(eligible, "paired_input_token_reduction"),
                 ),
+                "average_full_run_input_token_reduction": metric(
+                    "average_full_run_input_token_reduction",
+                    average(eligible, "full_run_input_token_reduction"),
+                ),
             },
             supporting={
+                "average_first_request_input_token_reduction": metric(
+                    "average_first_request_input_token_reduction",
+                    average(eligible, "first_request_input_token_reduction"),
+                ),
+                "average_continuation_input_token_reduction": metric(
+                    "average_continuation_input_token_reduction",
+                    average(eligible, "continuation_input_token_reduction"),
+                ),
                 "treatment_constraint_retention_rate": metric(
                     "treatment_constraint_retention_rate",
                     average(
@@ -202,6 +265,10 @@ class ContextManagerMode(EvalModePlugin):
                 "compaction_exercise_rate": metric(
                     "compaction_exercise_rate",
                     average(eligible, "compaction_exercised"),
+                ),
+                "treatment_budget_exhaustion_rate": metric(
+                    "treatment_budget_exhaustion_rate",
+                    average(eligible, "treatment_budget_exhausted"),
                 ),
             },
             guardrails={**task_guardrail(cases), **process_guardrails(cases)},
@@ -238,3 +305,8 @@ def _context_marker(spec: CaseSpec) -> str:
         f"{spec.dataset}:{spec.task_id}:{spec.entry_point}:context".encode("utf-8")
     ).hexdigest()[:16]
     return f"LITECODER_EVAL_CONTEXT_{digest}"
+
+
+def _input_metric(metrics: Mapping[str, Metric], preferred: str, fallback: str) -> float:
+    value = numeric_metric(metrics, preferred)
+    return value if value > 0 else numeric_metric(metrics, fallback)

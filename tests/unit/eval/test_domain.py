@@ -42,11 +42,11 @@ def test_execution_policy_rejects_empty_tools() -> None:
         ExecutionPolicy(frozenset())
 
 
-def test_multi_agent_policy_inherits_runtime_budgets() -> None:
+def test_multi_agent_policy_has_explicit_runtime_budgets() -> None:
     policy = policy_for_mode("multi-agent")
 
-    assert policy.max_rounds is None
-    assert policy.max_tokens is None
+    assert policy.max_rounds == 96
+    assert policy.max_tokens == 250_000
 
 
 def test_all_six_modes_are_registered() -> None:

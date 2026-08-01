@@ -279,17 +279,26 @@ class RuntimeCaseExecutor:
                 if has_continuation
                 else recording.events
             )
+            setup_total_input = _sum_usage_input_tokens(setup_events)
+            continuation_total_input = _sum_usage_input_tokens(
+                continuation_events
+            )
             runtime_state.update(
                 {
                     "setup_input_tokens": setup_input,
                     "setup_output_tokens": setup_output,
+                    "setup_total_input_tokens": setup_total_input,
                     "setup_first_request_input_tokens": (
                         _first_usage_input_tokens(setup_events)
                     ),
                     "continuation_input_tokens": result_input,
                     "continuation_output_tokens": result_output,
+                    "continuation_total_input_tokens": continuation_total_input,
                     "continuation_first_request_input_tokens": (
                         _first_usage_input_tokens(continuation_events)
+                    ),
+                    "total_recorded_input_tokens": (
+                        setup_total_input + continuation_total_input
                     ),
                     "experiment_turn_count": 1 + int(setup_result is not None),
                 }
@@ -867,6 +876,18 @@ def _first_usage_input_tokens(events: list[RuntimeUIEvent]) -> int:
         if isinstance(value, int) and not isinstance(value, bool):
             return value
     return 0
+
+
+def _sum_usage_input_tokens(events: list[RuntimeUIEvent]) -> int:
+    """Return the sum of per-request input usage events."""
+    total = 0
+    for event in events:
+        if event.type is not UIEventType.USAGE_UPDATED:
+            continue
+        value = event.payload.get("input_tokens")
+        if isinstance(value, int) and not isinstance(value, bool):
+            total += value
+    return total
 
 
 def _runtime_error_reason(error: Exception | None) -> str:

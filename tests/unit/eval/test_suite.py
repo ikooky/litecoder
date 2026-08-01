@@ -143,3 +143,49 @@ def test_suite_stops_after_first_failed_mode(tmp_path: Path) -> None:
 
     assert result == 7
     assert len(calls) == 2
+
+
+def test_suite_returns_infra_exit_code_when_a_mode_has_infra_cases(
+    tmp_path: Path,
+) -> None:
+    eval_suite = _eval_suite_module()
+
+    def fake_loader(dataset: str, *, limit: int, seed: int) -> tuple[EvalPlusTask, ...]:
+        return tuple(
+            EvalPlusTask(
+                f"HumanEval/{index}",
+                "def answer():\n",
+                "answer",
+                dataset,
+            )
+            for index in range(limit)
+        )
+
+    def infra_runner(**kwargs: object) -> int:
+        output_dir = kwargs["output_dir"]
+        assert isinstance(output_dir, Path)
+        output_dir.mkdir(parents=True)
+        (output_dir / "run.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed_with_infra_errors",
+                    "cases": [{"status": "infra_error"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+    result = eval_suite.run_suite(
+        output_root=tmp_path,
+        task_loader=fake_loader,
+        mode_runner=infra_runner,
+        now=datetime(2026, 7, 22, tzinfo=timezone.utc),
+        suffix="f1e2d3c4",
+    )
+
+    assert result == eval_suite.SUITE_INFRA_EXIT_CODE
+    suite_path = tmp_path / "2026-07-22" / "000000-f1e2d3c4" / "suite.json"
+    suite = json.loads(suite_path.read_text(encoding="utf-8"))
+    assert suite["status"] == "completed_with_infra_errors"
+    assert "agent-benchmark: 1 case(s)" in suite["error"]

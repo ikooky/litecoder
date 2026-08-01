@@ -24,11 +24,11 @@ def policy_for_mode(mode: str) -> ExecutionPolicy:
         return ExecutionPolicy(BASE_EVAL_TOOLS | {"memory_update"})
     if selected is EvalMode.MULTI_AGENT:
         # Multi-agent mode needs the runtime's collaboration and worktree tools.
-        # It deliberately keeps the full registry; the permission policy remains
-        # the final authority for mutating operations.
+        # It keeps the full registry, but still has explicit budgets so a stalled
+        # team cannot make the suite run unboundedly.
         return ExecutionPolicy(
             frozenset({"*"}),
-            max_rounds=None,
-            max_tokens=None,
+            max_rounds=96,
+            max_tokens=250_000,
         )
     return ExecutionPolicy(BASE_EVAL_TOOLS)

@@ -33,6 +33,8 @@ class MultiAgentMode(EvalModePlugin):
     """Component responsible for the multi agent mode."""
     name = "multi-agent"
 
+    _MIN_TIME_COMPARABLE_CASES = 3
+
     def candidates(self, spec: CaseSpec) -> tuple[ExecutionCandidate, ...]:
         """Return candidate implementations for evaluation."""
         return (
@@ -173,6 +175,7 @@ class MultiAgentMode(EvalModePlugin):
             if numeric(case, "subagent_full_case_success") == 1
             and numeric(case, "team_full_case_success") == 1
         )
+        enough_time_samples = len(comparable) >= self._MIN_TIME_COMPARABLE_CASES
         subagent_time = average(comparable, "subagent_time_seconds")
         team_time = average(comparable, "team_time_seconds")
         return RunMeasurement(
@@ -181,7 +184,7 @@ class MultiAgentMode(EvalModePlugin):
                     "team_vs_subagent_time_reduction",
                     (
                         1 - team_time / subagent_time
-                        if comparable and subagent_time
+                        if enough_time_samples and subagent_time
                         else "N/A"
                     ),
                 ),
@@ -225,6 +228,10 @@ class MultiAgentMode(EvalModePlugin):
                 ),
                 "time_comparable_case_count": metric(
                     "time_comparable_case_count", len(comparable)
+                ),
+                "time_comparison_minimum_case_count": metric(
+                    "time_comparison_minimum_case_count",
+                    self._MIN_TIME_COMPARABLE_CASES,
                 ),
             },
             guardrails={**task_guardrail(cases), **process_guardrails(cases)},

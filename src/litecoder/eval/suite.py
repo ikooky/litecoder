@@ -37,7 +37,8 @@ SHARED_DATASET_LIMITS: tuple[tuple[DatasetName, int], ...] = (
     ("humaneval", 6),
     ("mbpp", 6),
 )
-SUITE_SEED = 42
+SUITE_SEED = 2026
+SUITE_INFRA_EXIT_CODE = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,12 +157,14 @@ def run_suite(
             )
 
     print(f"\nAll evaluations completed. Reports: {suite_root}", flush=True)
-    final_status = (
-        "completed_with_infra_errors"
-        if any(item.get("status") == "completed_with_infra_errors" for item in run_summaries)
-        else "completed"
-    )
-    return finish(0, final_status)
+    infra_runs = [item for item in run_summaries if _run_has_infra_errors(item)]
+    if infra_runs:
+        return finish(
+            SUITE_INFRA_EXIT_CODE,
+            "completed_with_infra_errors",
+            _suite_infra_summary(infra_runs),
+        )
+    return finish(0, "completed")
 
 
 def build_run_plan(seed: int) -> tuple[SuiteRun, ...]:
@@ -275,6 +278,30 @@ def _read_run_summary(
         "providers": metadata.get("providers", []) if isinstance(metadata, dict) else [],
         "primary_metrics": payload.get("primary_metrics", {}) if isinstance(payload, dict) else {},
     }
+
+
+def _run_has_infra_errors(summary: dict[str, object]) -> bool:
+    if summary.get("status") == "completed_with_infra_errors":
+        return True
+    counts = summary.get("case_status_counts")
+    return isinstance(counts, dict) and int(counts.get("infra_error", 0) or 0) > 0
+
+
+def _suite_infra_summary(runs: list[dict[str, object]]) -> str:
+    details: list[str] = []
+    for item in runs:
+        counts = item.get("case_status_counts")
+        infra_count = (
+            int(counts.get("infra_error", 0) or 0)
+            if isinstance(counts, dict)
+            else 0
+        )
+        if infra_count:
+            details.append(f"{item.get('mode', 'unknown')}: {infra_count} case(s)")
+        elif item.get("status") == "completed_with_infra_errors":
+            details.append(f"{item.get('mode', 'unknown')}: infra errors reported")
+    suffix = "; ".join(details) if details else "see per-mode reports"
+    return "Suite completed with infrastructure errors; " + suffix
 
 
 def _write_suite_reports(

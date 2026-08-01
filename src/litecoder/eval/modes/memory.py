@@ -212,6 +212,10 @@ class MemoryMode(EvalModePlugin):
         eligible = capability_cases(cases)
         return RunMeasurement(
             primary={
+                "treatment_memory_success_rate": metric(
+                    "treatment_memory_success_rate",
+                    _average_or_na(eligible, "treatment_memory_success"),
+                ),
                 "cross_session_treatment_success_rate": metric(
                     "cross_session_treatment_success_rate",
                     _average_or_na(eligible, "treatment_memory_success"),
@@ -224,19 +228,43 @@ class MemoryMode(EvalModePlugin):
                     "distractor_resistance_rate",
                     _average_or_na(eligible, "distractor_resistance"),
                 ),
+                "treatment_task_success_rate": metric(
+                    "treatment_task_success_rate",
+                    _average_or_na(eligible, "treatment_candidate_passed"),
+                ),
             },
             supporting={
+                "control_memory_success_rate": metric(
+                    "control_memory_success_rate",
+                    _average_or_na(eligible, "control_memory_success"),
+                ),
                 "control_success_rate": metric(
                     "control_success_rate",
                     _average_or_na(eligible, "control_memory_success"),
+                ),
+                "control_task_success_rate": metric(
+                    "control_task_success_rate",
+                    _average_or_na(eligible, "control_candidate_passed"),
                 ),
                 "treatment_recall_exercise_rate": metric(
                     "treatment_recall_exercise_rate",
                     _average_or_na(eligible, "treatment_recall_exercised"),
                 ),
+                "treatment_budget_exhaustion_rate": metric(
+                    "treatment_budget_exhaustion_rate",
+                    _average_or_na(eligible, "treatment_budget_exhausted"),
+                ),
                 "distractor_recall_exercise_rate": metric(
                     "distractor_recall_exercise_rate",
                     _average_or_na(eligible, "distractor_recall_exercised"),
+                ),
+                "distractor_task_success_rate": metric(
+                    "distractor_task_success_rate",
+                    _average_or_na(eligible, "distractor_candidate_passed"),
+                ),
+                "distractor_budget_exhaustion_rate": metric(
+                    "distractor_budget_exhaustion_rate",
+                    _average_or_na(eligible, "distractor_budget_exhausted"),
                 ),
             },
             guardrails={**task_guardrail(cases), **process_guardrails(cases)},
