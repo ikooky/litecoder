@@ -241,23 +241,29 @@ class MultiAgentMode(EvalModePlugin):
 def _subagent_prompt(prompt: str) -> str:
     return (
         f"{prompt}\n\n"
-        "Exercise the production single-subagent workflow. Create a durable pending "
-        "task with task_create, create and bind its worktree with worktree_create, "
-        "then call spawn_subagent with that task_id and worktree_id. Do not create a "
-        "team. The child must explicitly task_claim before editing and task_complete "
-        "after finishing. Review the returned result and integrate the correct "
-        "implementation into this candidate's root solution.py."
+        "Exercise the production single-subagent workflow with a short closed loop. "
+        "Create one durable pending task with task_create and one bound worktree "
+        "with worktree_create, then call spawn_subagent with that task_id and "
+        "worktree_id. Do not create a team. Request budget max_rounds=8 and "
+        "max_tool_calls=16. The child must task_claim before editing, modify only "
+        "solution.py, do at most one focused validation, send no long transcript, "
+        "and make task_complete its final tool call. Review the returned result and "
+        "integrate the correct implementation into this candidate's root solution.py."
     )
 
 
 def _team_prompt(prompt: str) -> str:
     return (
         f"{prompt}\n\n"
-        "Exercise the production team workflow. Create at least two independent "
-        "pending tasks and a bound worktree for each, then create at least two team "
-        "members with team_create. Each member must explicitly task_claim its own "
-        "task, do substantive work, and task_complete it. Require at least one "
-        "member-to-member team_send exchange as well as substantive results sent to "
-        "the lead. The lead must receive and review the results, then integrate the "
-        "selected implementation into this candidate's root solution.py."
+        "Exercise the production team workflow as a bounded two-worker closed loop. "
+        "Create two independent pending tasks and one bound worktree for each, then "
+        "create at least two team members with team_create. Request max_rounds=8 and "
+        "max_tool_calls=16 for each member. Each member must task_claim its own "
+        "task before editing, modify only its worktree's solution.py, do at most one "
+        "focused validation, send one concise result to the lead, and make "
+        "task_complete its final tool call. After both agent IDs are known, require "
+        "one member-to-member team_send exchange (include the other member's exact "
+        "ID in the objective) as well as one result from each member to the lead. "
+        "The lead must receive and review both results, then integrate the selected "
+        "implementation into this candidate's root solution.py without long reports."
     )

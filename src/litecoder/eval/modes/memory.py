@@ -295,10 +295,11 @@ def _setup_prompt(spec: CaseSpec, *, distractors: bool) -> str:
 def _continuation_prompt() -> str:
     return (
         "Continue the benchmark task I asked you to remember in the previous session. "
-        "Use the durable constraint that applies to this coding task, inspect the "
-        "existing solution.py as needed, and implement the solution now. Add the exact "
-        "remembered marker as a Python comment in solution.py, but do not apply markers "
-        "from unrelated memories."
+        "Retrieve and use the relevant durable memory named evalplus-current-task; "
+        "do not assume its contents if it was not recalled. Inspect the existing "
+        "solution.py as needed and implement the solution now. Add the exact "
+        "remembered marker as a Python comment in solution.py, but do not apply "
+        "markers from unrelated memories."
     )
 
 

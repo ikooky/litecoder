@@ -46,7 +46,14 @@ def test_multi_agent_policy_has_explicit_runtime_budgets() -> None:
     policy = policy_for_mode("multi-agent")
 
     assert policy.max_rounds == 96
-    assert policy.max_tokens == 250_000
+    assert policy.max_tokens == 400_000
+
+
+def test_context_manager_policy_allows_compaction_recovery() -> None:
+    policy = policy_for_mode("context-manager")
+
+    assert policy.max_rounds == 32
+    assert policy.max_tokens == 120_000
 
 
 def test_all_six_modes_are_registered() -> None:
