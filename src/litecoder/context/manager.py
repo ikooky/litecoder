@@ -108,6 +108,15 @@ class ContextManager:
         self._memory_load_task: asyncio.Task[LoadedMemories] | None = None
         self._loaded_memory_count = 0
         self._pending_memory_diagnostics: list[dict[str, object]] = []
+        self._prompt_section_tokens: dict[str, int] = {}
+        self._durable_memory_section_tokens = 0
+        self._all_memory_tokens = 0
+        self._memory_index_tokens = 0
+        self._recalled_memory_tokens = 0
+        self._optimized_memory_tokens = 0
+        self._memory_context_tokens = 0
+        self._memory_catalog_reduction = 0.0
+        self._memory_recalled_ids: tuple[str, ...] = ()
         self.prompt_assembler = prompt_assembler or PromptAssembler()
         self.prompt_state_provider = prompt_state_provider
         if prompt_task_ids is not None and any(
@@ -132,6 +141,20 @@ class ContextManager:
         diagnostics = tuple(self._pending_memory_diagnostics)
         self._pending_memory_diagnostics.clear()
         return diagnostics
+
+    def prompt_telemetry(self) -> dict[str, object]:
+        """Return token telemetry for the most recently built request."""
+        return {
+            "prompt_section_tokens": dict(self._prompt_section_tokens),
+            "durable_memory_section_tokens": self._durable_memory_section_tokens,
+            "all_memory_tokens": self._all_memory_tokens,
+            "memory_index_tokens": self._memory_index_tokens,
+            "recalled_memory_tokens": self._recalled_memory_tokens,
+            "optimized_memory_tokens": self._optimized_memory_tokens,
+            "memory_context_tokens": self._memory_context_tokens,
+            "memory_catalog_reduction": self._memory_catalog_reduction,
+            "memory_recalled_ids": list(self._memory_recalled_ids),
+        }
 
     @property
     def can_compact(self) -> bool:
@@ -227,6 +250,7 @@ class ContextManager:
                     }
                 )
         _inject_loaded_memories(request_messages, loaded.rendered)
+        self._record_prompt_telemetry(system, loaded)
         return ModelRequest(
             model=self.model,
             system=system,
@@ -234,6 +258,28 @@ class ContextManager:
             tools=tool_schemas,
             max_tokens=self.max_tokens,
         )
+
+    def _record_prompt_telemetry(
+        self, system: list[dict[str, object]], loaded: LoadedMemories
+    ) -> None:
+        section_tokens = _prompt_section_tokens(system)
+        recalled_text = loaded.rendered
+        recalled_tokens = estimate_tokens(recalled_text) if recalled_text else 0
+        durable_tokens = section_tokens.get("memories", 0)
+        optimized_tokens = loaded.memory_index_tokens + recalled_tokens
+        self._prompt_section_tokens = section_tokens
+        self._durable_memory_section_tokens = durable_tokens
+        self._all_memory_tokens = loaded.all_memory_tokens
+        self._memory_index_tokens = loaded.memory_index_tokens
+        self._recalled_memory_tokens = recalled_tokens
+        self._optimized_memory_tokens = optimized_tokens
+        self._memory_context_tokens = durable_tokens + recalled_tokens
+        self._memory_catalog_reduction = (
+            1 - optimized_tokens / loaded.all_memory_tokens
+            if loaded.all_memory_tokens
+            else 0.0
+        )
+        self._memory_recalled_ids = loaded.selected_names
 
     def _skill_catalog_for(self, workspace_root: Path) -> SkillCatalog:
         if self.skill_catalog_resolver is None:
@@ -459,6 +505,24 @@ async def _safe_system_memory_payload(
     return (
         payload if isinstance(payload, dict) else _memory_prompt_fallback()
     )
+
+
+def _prompt_section_tokens(system: list[dict[str, object]]) -> dict[str, int]:
+    """Estimate tokens for each named prompt section."""
+    sections: dict[str, int] = {}
+    for index, block in enumerate(system):
+        text = block.get("text")
+        if not isinstance(text, str):
+            continue
+        name = f"system_{index}"
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict) and isinstance(parsed.get("name"), str):
+            name = parsed["name"]
+        sections[name] = sections.get(name, 0) + estimate_tokens(text)
+    return sections
 
 
 def _memory_prompt_fallback() -> dict[str, object]:

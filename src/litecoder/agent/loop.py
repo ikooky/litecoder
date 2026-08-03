@@ -94,6 +94,48 @@ def _loaded_memory_count(context: object) -> object:
     return getattr(context, "loaded_memory_count", 0)
 
 
+def _prompt_telemetry(context: object) -> dict[str, object]:
+    """Return bounded prompt telemetry when the context manager provides it."""
+    getter = getattr(context, "prompt_telemetry", None)
+    if not callable(getter):
+        return {}
+    try:
+        telemetry = getter()
+    except Exception:
+        return {}
+    if not isinstance(telemetry, Mapping):
+        return {}
+    result: dict[str, object] = {}
+    for name in (
+        "durable_memory_section_tokens",
+        "all_memory_tokens",
+        "memory_index_tokens",
+        "recalled_memory_tokens",
+        "optimized_memory_tokens",
+        "memory_context_tokens",
+        "memory_catalog_reduction",
+    ):
+        value = telemetry.get(name)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            result[name] = value
+    recalled_ids = telemetry.get("memory_recalled_ids")
+    if isinstance(recalled_ids, (list, tuple)):
+        result["memory_recalled_ids"] = [
+            item for item in recalled_ids if isinstance(item, str)
+        ]
+    sections = telemetry.get("prompt_section_tokens")
+    if isinstance(sections, Mapping):
+        result["prompt_section_tokens"] = {
+            str(name): value
+            for name, value in sections.items()
+            if isinstance(name, str)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and value >= 0
+        }
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeBudgets:
     """Data model representing the runtime budgets."""
@@ -387,14 +429,17 @@ class AgentLoop:
                 status, reason = "failed", "model call blocked by hook"
                 break
             request = replace(request, max_tokens=output_token_limit)
+            prompt_telemetry = _prompt_telemetry(self.context)
+            requested_payload: dict[str, object] = {
+                "round_number": round_number,
+                "model": request.model,
+                "memory_count": _loaded_memory_count(self.context),
+            }
+            requested_payload.update(prompt_telemetry)
             await self._emit_ui(
                 ui,
                 UIEventType.MODEL_REQUESTED,
-                payload={
-                    "round_number": round_number,
-                    "model": request.model,
-                    "memory_count": _loaded_memory_count(self.context),
-                },
+                payload=requested_payload,
             )
             usage_progress.begin_round()
             (

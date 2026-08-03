@@ -19,6 +19,7 @@ from litecoder.eval.execution import (
     _allow_eval_permission,
     _copy_trace,
     _execution_failure,
+    _memory_prompt_metrics,
     _path_in_root,
 )
 from litecoder.providers.models import Usage
@@ -27,6 +28,64 @@ from litecoder.tasks.store import TaskStore
 from litecoder.tools.permission import PermissionPrompt, PromptChoice
 from litecoder.ui.events import RuntimeUIEvent, UIEventType
 from litecoder.ui.sink import emit_ui
+
+
+def test_memory_prompt_metrics_pair_request_telemetry_with_usage() -> None:
+    events = [
+        RuntimeUIEvent(
+            UIEventType.MODEL_REQUESTED,
+            1,
+            1.0,
+            payload={
+                "durable_memory_section_tokens": 20,
+                "all_memory_tokens": 1_000,
+                "memory_index_tokens": 200,
+                "recalled_memory_tokens": 40,
+                "optimized_memory_tokens": 240,
+                "memory_context_tokens": 50,
+                "memory_recalled_ids": ["evalplus-current-task"],
+            },
+        ),
+        RuntimeUIEvent(
+            UIEventType.USAGE_UPDATED,
+            2,
+            1.1,
+            payload={"input_tokens": 200},
+        ),
+        RuntimeUIEvent(
+            UIEventType.MODEL_REQUESTED,
+            3,
+            1.2,
+            payload={
+                "durable_memory_section_tokens": 20,
+                "all_memory_tokens": 1_000,
+                "memory_index_tokens": 200,
+                "recalled_memory_tokens": 40,
+                "optimized_memory_tokens": 240,
+                "memory_context_tokens": 50,
+                "memory_recalled_ids": ["evalplus-current-task"],
+            },
+        ),
+        RuntimeUIEvent(
+            UIEventType.USAGE_UPDATED,
+            4,
+            1.3,
+            payload={"input_tokens": 300},
+        ),
+    ]
+
+    metrics = _memory_prompt_metrics(events)
+
+    assert metrics["all_memory_tokens"] == 2_000
+    assert metrics["memory_index_tokens"] == 400
+    assert metrics["recalled_memory_tokens"] == 80
+    assert metrics["optimized_memory_tokens"] == 480
+    assert metrics["memory_context_tokens"] == 100
+    assert metrics["memory_context_input_tokens"] == 500
+    assert metrics["memory_context_request_count"] == 2
+    assert metrics["memory_context_share"] == 0.2
+    assert metrics["memory_catalog_reduction"] == 0.76
+    assert metrics["memory_recalled_ids"] == '["evalplus-current-task"]'
 
 
 def _prompt(

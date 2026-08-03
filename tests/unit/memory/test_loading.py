@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from litecoder.context.token_budget import estimate_tokens
 from litecoder.context.session.models import MessageRecord
 from litecoder.memory.loading import LoadedMemories, load_memories
 from litecoder.memory.models import MemoryEntry
@@ -89,6 +90,12 @@ async def test_load_memories_applies_file_and_total_budgets(tmp_path: Path) -> N
     assert len(loaded.entries) == 5
     assert all(len(item.body.encode("utf-8")) <= 4_096 for item in loaded.entries)
     assert len(loaded.rendered.encode("utf-8")) <= 20_480
+    assert loaded.all_memory_tokens > 0
+    assert loaded.all_memory_tokens >= estimate_tokens(loaded.rendered)
+    assert loaded.memory_index_tokens > 0
+    assert loaded.selected_names == tuple(
+        entry.name for entry in loaded.entries
+    )
 
 
 async def test_load_memories_truncates_utf8_without_invalid_bytes(tmp_path: Path) -> None:

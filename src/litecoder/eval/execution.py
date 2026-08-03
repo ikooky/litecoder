@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -443,6 +443,7 @@ async def _runtime_experiment_state(
             candidate.memory_recall == "enabled"
         )
         state["memory_recalled_items"] = _recalled_memory_count(final_events)
+        state.update(_memory_prompt_metrics(final_events))
     return state
 
 
@@ -470,6 +471,101 @@ def _recalled_memory_count(events: list[RuntimeUIEvent]) -> int:
         and isinstance(event.payload.get("memory_count"), int)
     ]
     return max(counts, default=0)
+
+
+def _memory_prompt_metrics(
+    events: list[RuntimeUIEvent],
+) -> dict[str, float | int | str]:
+    """Aggregate memory prompt telemetry with provider usage events."""
+    requests: list[dict[str, float]] = []
+    recalled_ids: set[str] = set()
+    current: dict[str, float] | None = None
+
+    def finish() -> None:
+        if current is not None:
+            requests.append(current)
+
+    for event in events:
+        if event.type is UIEventType.MODEL_REQUESTED:
+            finish()
+            recalled_ids.update(
+                _payload_strings(event.payload, "memory_recalled_ids")
+            )
+            current = {
+                "durable_memory_section_tokens": _payload_number(
+                    event.payload, "durable_memory_section_tokens"
+                ),
+                "all_memory_tokens": _payload_number(
+                    event.payload, "all_memory_tokens"
+                ),
+                "memory_index_tokens": _payload_number(
+                    event.payload, "memory_index_tokens"
+                ),
+                "recalled_memory_tokens": _payload_number(
+                    event.payload, "recalled_memory_tokens"
+                ),
+                "optimized_memory_tokens": _payload_number(
+                    event.payload, "optimized_memory_tokens"
+                ),
+                "memory_context_tokens": _payload_number(
+                    event.payload, "memory_context_tokens"
+                ),
+                "input_tokens": 0.0,
+            }
+        elif event.type is UIEventType.USAGE_UPDATED and current is not None:
+            current["input_tokens"] += _payload_number(
+                event.payload, "input_tokens"
+            )
+    finish()
+
+    all_memory_tokens = sum(item["all_memory_tokens"] for item in requests)
+    index_tokens = sum(item["memory_index_tokens"] for item in requests)
+    recalled_tokens = sum(item["recalled_memory_tokens"] for item in requests)
+    optimized_tokens = sum(
+        item["optimized_memory_tokens"] for item in requests
+    )
+    durable_tokens = sum(
+        item["durable_memory_section_tokens"] for item in requests
+    )
+    context_tokens = sum(item["memory_context_tokens"] for item in requests)
+    input_tokens = sum(item["input_tokens"] for item in requests)
+    return {
+        "all_memory_tokens": int(all_memory_tokens),
+        "memory_index_tokens": int(index_tokens),
+        "recalled_memory_tokens": int(recalled_tokens),
+        "optimized_memory_tokens": int(optimized_tokens),
+        "durable_memory_section_tokens": int(durable_tokens),
+        "memory_context_tokens": int(context_tokens),
+        "memory_context_input_tokens": int(input_tokens),
+        "memory_context_request_count": sum(
+            item["recalled_memory_tokens"] > 0 for item in requests
+        ),
+        "memory_context_share": (
+            context_tokens / input_tokens if input_tokens else 0.0
+        ),
+        "memory_catalog_reduction": (
+            1 - optimized_tokens / all_memory_tokens
+            if all_memory_tokens
+            else 0.0
+        ),
+        "memory_recalled_ids": json.dumps(
+            sorted(recalled_ids), separators=(",", ":")
+        ),
+    }
+
+
+def _payload_number(payload: Mapping[str, object], name: str) -> float:
+    value = payload.get(name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, float(value))
+
+
+def _payload_strings(payload: Mapping[str, object], name: str) -> tuple[str, ...]:
+    value = payload.get(name)
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
 
 
 def _result_usage(result: object | None) -> tuple[int, int]:

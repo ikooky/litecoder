@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping
 
 from litecoder.eval.domain import (
@@ -24,8 +25,12 @@ from litecoder.eval.modes.base import (
     metric,
     numeric_metric,
     process_guardrails,
+    ratio,
     task_guardrail,
 )
+
+
+_RELEVANT_MEMORY_NAME = "evalplus-current-task"
 
 
 class MemoryMode(EvalModePlugin):
@@ -73,6 +78,11 @@ class MemoryMode(EvalModePlugin):
         candidate = text_metric(execution.metrics, "candidate_name", "unknown")
         marker_retained = int(_memory_marker(spec) in execution.solution)
         distractor_rejected = int(_distractor_marker(spec) not in execution.solution)
+        recalled_names = _memory_ids(execution.metrics)
+        relevant_names = {_RELEVANT_MEMORY_NAME}
+        true_positive = len(recalled_names & relevant_names)
+        false_negative = len(relevant_names - recalled_names)
+        false_positive = len(recalled_names - relevant_names)
         metrics = {
             name: Metric(name, item.value, item.unit)
             for name, item in execution.metrics.items()
@@ -83,6 +93,27 @@ class MemoryMode(EvalModePlugin):
         )
         metrics["distractor_marker_rejected"] = metric(
             "distractor_marker_rejected", distractor_rejected
+        )
+        metrics["memory_relevant_count"] = metric(
+            "memory_relevant_count", len(relevant_names)
+        )
+        metrics["memory_retrieved_count"] = metric(
+            "memory_retrieved_count", len(recalled_names)
+        )
+        metrics["memory_true_positive_count"] = metric(
+            "memory_true_positive_count", true_positive
+        )
+        metrics["memory_false_negative_count"] = metric(
+            "memory_false_negative_count", false_negative
+        )
+        metrics["memory_false_positive_count"] = metric(
+            "memory_false_positive_count", false_positive
+        )
+        metrics["memory_recall_rate"] = metric(
+            "memory_recall_rate", ratio(true_positive, true_positive + false_negative)
+        )
+        metrics["memory_accuracy"] = metric(
+            "memory_accuracy", ratio(true_positive, true_positive + false_positive)
         )
         return ModeMeasurement(
             metrics=metrics,
@@ -97,6 +128,18 @@ class MemoryMode(EvalModePlugin):
                 ),
                 "memory_marker_retained": marker_retained,
                 "distractor_marker_rejected": distractor_rejected,
+                "memory_recalled_ids": sorted(recalled_names),
+                "memory_relevant_count": len(relevant_names),
+                "memory_retrieved_count": len(recalled_names),
+                "memory_true_positive_count": true_positive,
+                "memory_false_negative_count": false_negative,
+                "memory_false_positive_count": false_positive,
+                "memory_recall_rate": ratio(
+                    true_positive, true_positive + false_negative
+                ),
+                "memory_accuracy": ratio(
+                    true_positive, true_positive + false_positive
+                ),
             },
         )
 
@@ -140,10 +183,6 @@ class MemoryMode(EvalModePlugin):
             numeric_metric(result, "treatment_memory_success")
             - numeric_metric(result, "control_memory_success"),
         )
-        result["distractor_resistance"] = metric(
-            "distractor_resistance",
-            numeric_metric(result, "distractor_memory_success"),
-        )
         return result
 
     def case_evidence(
@@ -169,6 +208,55 @@ class MemoryMode(EvalModePlugin):
                     ),
                     "distractor_marker_rejected": numeric_metric(
                         candidate.metrics, "distractor_marker_rejected"
+                    ),
+                    "memory_recalled_ids": _memory_ids_json(candidate.metrics),
+                    "memory_relevant_count": numeric_metric(
+                        candidate.metrics, "memory_relevant_count"
+                    ),
+                    "memory_retrieved_count": numeric_metric(
+                        candidate.metrics, "memory_retrieved_count"
+                    ),
+                    "memory_true_positive_count": numeric_metric(
+                        candidate.metrics, "memory_true_positive_count"
+                    ),
+                    "memory_false_negative_count": numeric_metric(
+                        candidate.metrics, "memory_false_negative_count"
+                    ),
+                    "memory_false_positive_count": numeric_metric(
+                        candidate.metrics, "memory_false_positive_count"
+                    ),
+                    "memory_recall_rate": numeric_metric(
+                        candidate.metrics, "memory_recall_rate"
+                    ),
+                    "memory_accuracy": numeric_metric(
+                        candidate.metrics, "memory_accuracy"
+                    ),
+                    "durable_memory_section_tokens": numeric_metric(
+                        candidate.metrics, "durable_memory_section_tokens"
+                    ),
+                    "all_memory_tokens": numeric_metric(
+                        candidate.metrics, "all_memory_tokens"
+                    ),
+                    "memory_index_tokens": numeric_metric(
+                        candidate.metrics, "memory_index_tokens"
+                    ),
+                    "recalled_memory_tokens": numeric_metric(
+                        candidate.metrics, "recalled_memory_tokens"
+                    ),
+                    "optimized_memory_tokens": numeric_metric(
+                        candidate.metrics, "optimized_memory_tokens"
+                    ),
+                    "memory_context_tokens": numeric_metric(
+                        candidate.metrics, "memory_context_tokens"
+                    ),
+                    "memory_context_input_tokens": numeric_metric(
+                        candidate.metrics, "memory_context_input_tokens"
+                    ),
+                    "memory_context_share": numeric_metric(
+                        candidate.metrics, "memory_context_share"
+                    ),
+                    "memory_catalog_reduction": numeric_metric(
+                        candidate.metrics, "memory_catalog_reduction"
                     ),
                 }
                 for name, candidate in candidates.items()
@@ -210,8 +298,39 @@ class MemoryMode(EvalModePlugin):
     def aggregate(self, cases: tuple[CaseReport, ...]) -> RunMeasurement:
         """Aggregate case metrics into a summary."""
         eligible = capability_cases(cases)
+        memory_candidates = ("treatment", "distractor")
+        true_positive = _sum_candidate_metric(
+            eligible, memory_candidates, "memory_true_positive_count"
+        )
+        false_negative = _sum_candidate_metric(
+            eligible, memory_candidates, "memory_false_negative_count"
+        )
+        false_positive = _sum_candidate_metric(
+            eligible, memory_candidates, "memory_false_positive_count"
+        )
+        all_memory_tokens = _sum_candidate_metric(
+            eligible, memory_candidates, "all_memory_tokens"
+        )
+        optimized_memory_tokens = _sum_candidate_metric(
+            eligible, memory_candidates, "optimized_memory_tokens"
+        )
         return RunMeasurement(
             primary={
+                "memory_context_reduction_rate": metric(
+                    "memory_context_reduction_rate",
+                    _ratio_or_na(
+                        all_memory_tokens - optimized_memory_tokens,
+                        all_memory_tokens,
+                    ),
+                ),
+                "memory_recall_rate": metric(
+                    "memory_recall_rate",
+                    _ratio_or_na(true_positive, true_positive + false_negative),
+                ),
+                "memory_accuracy": metric(
+                    "memory_accuracy",
+                    _ratio_or_na(true_positive, true_positive + false_positive),
+                ),
                 "treatment_memory_success_rate": metric(
                     "treatment_memory_success_rate",
                     _average_or_na(eligible, "treatment_memory_success"),
@@ -223,10 +342,6 @@ class MemoryMode(EvalModePlugin):
                 "memory_success_uplift": metric(
                     "memory_success_uplift",
                     _average_or_na(eligible, "treatment_uplift"),
-                ),
-                "distractor_resistance_rate": metric(
-                    "distractor_resistance_rate",
-                    _average_or_na(eligible, "distractor_resistance"),
                 ),
                 "treatment_task_success_rate": metric(
                     "treatment_task_success_rate",
@@ -246,17 +361,17 @@ class MemoryMode(EvalModePlugin):
                     "control_task_success_rate",
                     _average_or_na(eligible, "control_candidate_passed"),
                 ),
-                "treatment_recall_exercise_rate": metric(
-                    "treatment_recall_exercise_rate",
-                    _average_or_na(eligible, "treatment_recall_exercised"),
-                ),
                 "treatment_budget_exhaustion_rate": metric(
                     "treatment_budget_exhaustion_rate",
                     _average_or_na(eligible, "treatment_budget_exhausted"),
                 ),
-                "distractor_recall_exercise_rate": metric(
-                    "distractor_recall_exercise_rate",
-                    _average_or_na(eligible, "distractor_recall_exercised"),
+                "average_memory_context_tokens": metric(
+                    "average_memory_context_tokens",
+                    _average_or_na(eligible, "treatment_memory_context_tokens"),
+                ),
+                "average_memory_context_share": metric(
+                    "average_memory_context_share",
+                    _average_or_na(eligible, "treatment_memory_context_share"),
                 ),
                 "distractor_task_success_rate": metric(
                     "distractor_task_success_rate",
@@ -319,6 +434,39 @@ def _distractor_marker(spec: CaseSpec) -> str:
 def text_metric(metrics: Mapping[str, Metric], name: str, default: str) -> str:
     item = metrics.get(name)
     return item.value if item is not None and isinstance(item.value, str) else default
+
+
+def _memory_ids(metrics: Mapping[str, Metric]) -> set[str]:
+    item = metrics.get("memory_recalled_ids")
+    if item is None or not isinstance(item.value, str):
+        return set()
+    try:
+        value = json.loads(item.value)
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(value, list):
+        return set()
+    return {name for name in value if isinstance(name, str) and name}
+
+
+def _memory_ids_json(metrics: Mapping[str, Metric]) -> list[str]:
+    return sorted(_memory_ids(metrics))
+
+
+def _sum_candidate_metric(
+    cases: tuple[CaseReport, ...],
+    candidates: tuple[str, ...],
+    metric_name: str,
+) -> float:
+    return sum(
+        numeric_metric(case.metrics, f"{candidate}_{metric_name}")
+        for case in cases
+        for candidate in candidates
+    )
+
+
+def _ratio_or_na(numerator: float, denominator: float) -> float | str:
+    return numerator / denominator if denominator else "N/A"
 
 
 def _average_or_na(cases: tuple[CaseReport, ...], name: str) -> float | str:

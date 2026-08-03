@@ -240,6 +240,20 @@ async def test_context_manager_injects_index_and_request_only_memory(
     assert second_request.messages[-1]["content"] == injected
     assert len(provider.requests) == 1
     assert restored.messages[-1].content == original_content
+    telemetry = manager.prompt_telemetry()
+    assert telemetry["durable_memory_section_tokens"] > 0
+    assert telemetry["all_memory_tokens"] >= telemetry["recalled_memory_tokens"]
+    assert telemetry["memory_index_tokens"] > 0
+    assert telemetry["recalled_memory_tokens"] > 0
+    assert telemetry["optimized_memory_tokens"] == (
+        telemetry["memory_index_tokens"]
+        + telemetry["recalled_memory_tokens"]
+    )
+    assert telemetry["memory_context_tokens"] == (
+        telemetry["durable_memory_section_tokens"]
+        + telemetry["recalled_memory_tokens"]
+    )
+    assert telemetry["memory_recalled_ids"] == ["reply-style"]
 
 
 def test_context_manager_drops_legacy_memory_arguments() -> None:

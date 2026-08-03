@@ -426,6 +426,9 @@ async def test_memory_mode_requires_recalled_marker_for_causal_success(
         {
             "candidate_name": Metric("candidate_name", "treatment"),
             "memory_recalled_items": Metric("memory_recalled_items", 1),
+            "memory_recalled_ids": Metric(
+                "memory_recalled_ids", '["evalplus-current-task"]'
+            ),
         },
     )
     measurement = await mode.measure(spec, paths, marked_execution)
@@ -435,6 +438,14 @@ async def test_memory_mode_requires_recalled_marker_for_causal_success(
     def report(
         name: str, recalled: int, retained: int, rejected: int
     ) -> CandidateReport:
+        recalled_ids = {
+            "control": [],
+            "treatment": ["evalplus-current-task"],
+            "distractor": ["evalplus-current-task", "unrelated-task"],
+        }[name]
+        true_positive = int("evalplus-current-task" in recalled_ids)
+        false_negative = 1 - true_positive
+        false_positive = len(recalled_ids) - true_positive
         return CandidateReport(
             name,
             "passed",
@@ -444,9 +455,25 @@ async def test_memory_mode_requires_recalled_marker_for_causal_success(
             validation,
             {
                 "memory_recalled_items": Metric("memory_recalled_items", recalled),
+                "memory_recalled_ids": Metric(
+                    "memory_recalled_ids", json.dumps(recalled_ids)
+                ),
                 "memory_marker_retained": Metric("memory_marker_retained", retained),
                 "distractor_marker_rejected": Metric(
                     "distractor_marker_rejected", rejected
+                ),
+                "memory_relevant_count": Metric("memory_relevant_count", 1),
+                "memory_retrieved_count": Metric(
+                    "memory_retrieved_count", len(recalled_ids)
+                ),
+                "memory_true_positive_count": Metric(
+                    "memory_true_positive_count", true_positive
+                ),
+                "memory_false_negative_count": Metric(
+                    "memory_false_negative_count", false_negative
+                ),
+                "memory_false_positive_count": Metric(
+                    "memory_false_positive_count", false_positive
                 ),
             },
         )
@@ -461,8 +488,37 @@ async def test_memory_mode_requires_recalled_marker_for_causal_success(
     assert combined["control_memory_success"].value == 0
     assert combined["treatment_memory_success"].value == 1
     assert combined["treatment_uplift"].value == 1.0
-    assert combined["distractor_resistance"].value == 1.0
+    assert combined["treatment_memory_true_positive_count"].value == 1
+    assert combined["distractor_memory_false_positive_count"].value == 1
     assert mode.score(reports) == ("passed", "")
+
+    aggregate_case = CaseReport(
+        spec,
+        "passed",
+        CaseStage.SCORED,
+        paths,
+        execution,
+        validation,
+        {
+            **combined,
+            "treatment_all_memory_tokens": Metric(
+                "treatment_all_memory_tokens", 10_000
+            ),
+            "treatment_optimized_memory_tokens": Metric(
+                "treatment_optimized_memory_tokens", 3_500
+            ),
+            "distractor_all_memory_tokens": Metric(
+                "distractor_all_memory_tokens", 10_000
+            ),
+            "distractor_optimized_memory_tokens": Metric(
+                "distractor_optimized_memory_tokens", 3_500
+            ),
+        },
+    )
+    aggregate = mode.aggregate((aggregate_case,))
+    assert aggregate.primary["memory_context_reduction_rate"].value == 0.65
+    assert aggregate.primary["memory_recall_rate"].value == 1.0
+    assert aggregate.primary["memory_accuracy"].value == 2 / 3
 
     contaminated = {
         **reports,
