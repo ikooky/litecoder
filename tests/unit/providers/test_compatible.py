@@ -587,6 +587,132 @@ async def test_completion_replays_standard_history(
     }
 
 
+async def test_provider_reasoning_content_enables_proactive_replay(
+    completion_call: StubCall, responses_call: StubCall
+) -> None:
+    completion_call.events = [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning_content": "work"},
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "done"},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+    ]
+    compatible = provider(completion_call, responses_call)
+    _ = [event async for event in compatible.stream(request())]
+
+    completion_call.events = [
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    ]
+    follow_up = ModelRequest(
+        model="ignored",
+        system=[],
+        messages=[
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "previous answer"}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "continue"}],
+            },
+        ],
+        tools=[],
+        max_tokens=10,
+    )
+    _ = [event async for event in compatible.stream(follow_up)]
+
+    assert len(completion_call.calls) == 2
+    assert completion_call.calls[1]["messages"][0]["reasoning_content"] == " "
+
+
+async def test_reasoning_history_proactively_fills_other_assistant_turns(
+    completion_call: StubCall, responses_call: StubCall
+) -> None:
+    completion_call.events = [
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    ]
+    replay = ModelRequest(
+        model="ignored",
+        system=[],
+        messages=[
+            {
+                "role": "assistant",
+                "content": [{"type": "thinking", "thinking": "work"}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "previous answer"}],
+            },
+        ],
+        tools=[],
+        max_tokens=10,
+    )
+
+    _ = [
+        event
+        async for event in provider(completion_call, responses_call).stream(replay)
+    ]
+
+    messages = completion_call.calls[0]["messages"]
+    assert messages[0]["reasoning_content"] == "work"
+    assert messages[1]["reasoning_content"] == " "
+
+
+async def test_provider_specific_reasoning_content_enables_replay(
+    completion_call: StubCall, responses_call: StubCall
+) -> None:
+    completion_call.events = [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "provider_specific_fields": {
+                            "reasoning_content": "provider work"
+                        }
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]
+    compatible = provider(completion_call, responses_call)
+    _ = [event async for event in compatible.stream(request())]
+
+    completion_call.events = [
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    ]
+    follow_up = ModelRequest(
+        model="ignored",
+        system=[],
+        messages=[
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "previous answer"}],
+            }
+        ],
+        tools=[],
+        max_tokens=10,
+    )
+    _ = [event async for event in compatible.stream(follow_up)]
+
+    assert completion_call.calls[1]["messages"][0]["reasoning_content"] == " "
+
+
 async def test_anthropic_replay_preserves_native_thinking_block(
     completion_call: StubCall, responses_call: StubCall
 ) -> None:

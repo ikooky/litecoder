@@ -24,6 +24,12 @@ from litecoder.providers.models import ModelRequest, StopReason
 RequestFactory = Callable[[int], ModelRequest]
 RetrySleep = Callable[[float], Awaitable[object]]
 
+_DEFAULT_CONTINUATION_PROMPT = (
+    "Continue the previous response from exactly where it stopped. "
+    "Return only the remaining continuation; do not repeat text already emitted, "
+    "and preserve the original response format."
+)
+
 
 @dataclass(frozen=True, slots=True)
 class TextCompletionResult:
@@ -45,15 +51,17 @@ async def complete_text_with_retry(
     retry_budget: RetryBudget | None = None,
     retry_empty: bool = True,
     retry_incomplete: bool = True,
+    continuation_prompt: str = _DEFAULT_CONTINUATION_PROMPT,
     sleep: RetrySleep = asyncio.sleep,
 ) -> TextCompletionResult:
     """Complete a text-only model request with shared retry semantics.
 
     Provider transport errors marked retryable and empty/incomplete responses
-    retry with the current output limit.  A max-token response retries with a
-    larger limit, bounded by ``max_output_tokens``.  The final result is
-    returned to the caller so each domain can preserve its own fallback or
-    validation behavior.
+    retry with the current output limit.  A max-token response preserves the
+    emitted prefix, asks the provider for only the continuation, and retries
+    with a larger limit once, bounded by ``max_output_tokens``.  The final
+    result is returned to the caller so each domain can preserve its own
+    fallback or validation behavior.
     """
     _validate_positive_int(initial_max_tokens, "initial_max_tokens")
     if max_output_tokens is None:
@@ -63,6 +71,8 @@ async def complete_text_with_retry(
         raise ValueError("max_output_tokens must not be below initial_max_tokens")
     if not isinstance(retry_empty, bool) or not isinstance(retry_incomplete, bool):
         raise ValueError("retry flags must be boolean")
+    if not isinstance(continuation_prompt, str) or not continuation_prompt.strip():
+        raise ValueError("continuation_prompt must be a non-empty string")
 
     budget = retry_budget or RetryBudget(
         max_attempts=MODEL_RETRY_MAX_ATTEMPTS,
@@ -73,13 +83,21 @@ async def complete_text_with_retry(
     max_tokens_expanded = False
     max_token_retries = 0
     attempts = 0
+    accumulated_text = ""
 
     while True:
         attempts += 1
         try:
+            request = request_factory(current_max_tokens)
+            if accumulated_text:
+                request = _with_continuation(
+                    request,
+                    accumulated_text,
+                    continuation_prompt,
+                )
             result = await _collect_text(
                 provider,
-                request_factory(current_max_tokens),
+                request,
             )
         except asyncio.CancelledError:
             raise
@@ -97,8 +115,13 @@ async def complete_text_with_retry(
         next_max_tokens = current_max_tokens
         should_retry = False
         if result.provider_error is not None:
+            if accumulated_text and result.text:
+                accumulated_text += result.text
+                result = replace(result, text=accumulated_text)
             should_retry = result.provider_error.retryable
         elif result.stop_reason is StopReason.MAX_TOKENS:
+            accumulated_text += result.text
+            result = replace(result, text=accumulated_text)
             if max_token_retries < MODEL_CONTINUATION_MAX_ATTEMPTS:
                 if not max_tokens_expanded:
                     next_max_tokens = next_output_max_tokens(
@@ -113,8 +136,19 @@ async def complete_text_with_retry(
                 if should_retry:
                     max_token_retries += 1
         elif result.stop_reason is StopReason.END_TURN:
-            should_retry = retry_empty and not result.text.strip()
+            empty_response = not result.text.strip()
+            if accumulated_text and not empty_response:
+                result = replace(
+                    result,
+                    text=accumulated_text + result.text,
+                )
+            should_retry = retry_empty and empty_response
         elif result.stop_reason in {None, StopReason.UNKNOWN}:
+            if accumulated_text:
+                result = replace(
+                    result,
+                    text=accumulated_text + result.text,
+                )
             should_retry = retry_incomplete
 
         if not should_retry:
@@ -126,6 +160,26 @@ async def complete_text_with_retry(
         if decision.delay_seconds:
             await sleep(decision.delay_seconds)
         current_max_tokens = next_max_tokens
+
+
+def _with_continuation(
+    request: ModelRequest,
+    accumulated_text: str,
+    continuation_prompt: str,
+) -> ModelRequest:
+    """Resume a truncated text response without discarding its prefix."""
+    messages = [
+        *request.messages,
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": accumulated_text}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": continuation_prompt}],
+        },
+    ]
+    return replace(request, messages=messages)
 
 
 async def _collect_text(

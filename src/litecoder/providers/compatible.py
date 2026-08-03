@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 import json
 from typing import Any, Literal
@@ -47,6 +47,8 @@ _COMPLETION_STOP_MAP = {
     "context_length_exceeded": StopReason.CONTEXT_EXHAUSTED,
     "context_window_exceeded": StopReason.CONTEXT_EXHAUSTED,
 }
+
+_REASONING_CONTENT_PLACEHOLDER = " "
 
 
 def _normalize_completion_stop(value: object) -> tuple[StopReason, str]:
@@ -168,6 +170,7 @@ class CompatibleProvider:
         self.api_style = api_style
         self.api_key = api_key
         self.base_url = base_url
+        self._reasoning_content_seen = False
 
     async def stream(self, request: ModelRequest):
         """Handle the stream operation."""
@@ -180,6 +183,9 @@ class CompatibleProvider:
 
     async def _stream_completion(self, request: ModelRequest):
         state = _CompletionState()
+        reasoning_replay = self._reasoning_content_seen or _history_has_reasoning(
+            request.messages
+        )
         kwargs: dict[str, object] = {
             "model": self.model,
             "custom_llm_provider": (
@@ -188,7 +194,11 @@ class CompatibleProvider:
                 else "openai"
             ),
             "api_key": self.api_key,
-            "messages": _to_chat_messages(request, self.api_style),
+            "messages": _to_chat_messages(
+                request,
+                self.api_style,
+                reasoning_fallback=reasoning_replay,
+            ),
             "tools": _to_chat_tools(request.tools) or None,
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -330,9 +340,13 @@ class CompatibleProvider:
                     )
                 )
         reasoning = delta.get("reasoning_content")
+        provider_fields = delta.get("provider_specific_fields")
+        if reasoning is None and isinstance(provider_fields, dict):
+            reasoning = provider_fields.get("reasoning_content")
         if reasoning is not None:
             text = require_text(reasoning, "provider reasoning delta")
             if text:
+                self._reasoning_content_seen = True
                 events.extend(
                     self._completion_text_delta(
                         "reasoning", "reasoning", text, state
@@ -982,7 +996,10 @@ def _validate_trailing_completion_choices(
 
 
 def _to_chat_messages(
-    request: ModelRequest, api_style: APIStyle
+    request: ModelRequest,
+    api_style: APIStyle,
+    *,
+    reasoning_fallback: bool = False,
 ) -> list[dict[str, JsonValue]]:
     messages: list[dict[str, JsonValue]] = []
     if request.system:
@@ -1000,13 +1017,30 @@ def _to_chat_messages(
         role = copied.get("role")
         content = copied.get("content")
         if not isinstance(content, list):
+            if (
+                reasoning_fallback
+                and role == "assistant"
+                and api_style != "anthropic-messages"
+                and not _direct_reasoning_content(copied)
+            ):
+                patched = dict(copied)
+                patched["reasoning_content"] = (
+                    _reasoning_content_from_mapping(copied)
+                    or _REASONING_CONTENT_PLACEHOLDER
+                )
+                messages.append(patched)
+                continue
             messages.append(copied)
             continue
         if role == "assistant":
             assistant_content: list[JsonValue] = []
             tool_calls: list[JsonValue] = []
             reasoning_items: list[JsonValue] = []
-            reasoning_text = ""
+            reasoning_text = (
+                _reasoning_content_from_mapping(copied)
+                if reasoning_fallback
+                else _direct_reasoning_content(copied)
+            )
             for value in content:
                 if not isinstance(value, dict):
                     raise InvalidProviderData("assistant message content is invalid")
@@ -1044,11 +1078,21 @@ def _to_chat_messages(
                     item = block.get("item")
                     if isinstance(item, dict):
                         reasoning_items.append(item)
+                        if reasoning_fallback and not text:
+                            reasoning_text += _reasoning_item_text(item)
                     items = block.get("items")
                     if isinstance(items, list):
                         reasoning_items.extend(
                             item for item in items if isinstance(item, dict)
                         )
+                        if reasoning_fallback and not text:
+                            reasoning_text += " ".join(
+                                _reasoning_item_text(item)
+                                for item in items
+                                if isinstance(item, dict)
+                            )
+                elif reasoning_fallback and block_type == "openai_opaque":
+                    reasoning_text += _reasoning_content_from_mapping(block)
                 elif block_type == "tool_call":
                     tool_calls.append(
                         {
@@ -1080,6 +1124,13 @@ def _to_chat_messages(
                 chat_message["reasoning_items"] = reasoning_items
             if reasoning_text:
                 chat_message["reasoning_content"] = reasoning_text
+            elif (
+                reasoning_fallback
+                and api_style != "anthropic-messages"
+            ):
+                chat_message["reasoning_content"] = (
+                    _REASONING_CONTENT_PLACEHOLDER
+                )
             messages.append(chat_message)
             continue
         if role == "user":
@@ -1114,6 +1165,43 @@ def _to_chat_messages(
             continue
         messages.append(copied)
     return messages
+
+
+def _history_has_reasoning(messages: list[dict[str, JsonValue]]) -> bool:
+    """Return whether persisted history contains provider reasoning output."""
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        if _reasoning_content_from_mapping(message):
+            return True
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for value in content:
+            if not isinstance(value, dict):
+                continue
+            block_type = value.get("type")
+            if block_type in {"thinking", "reasoning", "redacted_thinking", "openai_opaque"}:
+                return True
+    return False
+
+
+def _direct_reasoning_content(value: Mapping[str, object]) -> str:
+    reasoning = value.get("reasoning_content")
+    return reasoning if isinstance(reasoning, str) and reasoning else ""
+
+
+def _reasoning_content_from_mapping(value: Mapping[str, object]) -> str:
+    direct = _direct_reasoning_content(value)
+    if direct:
+        return direct
+    for key in ("provider_specific_fields", "provider", "merged"):
+        nested = value.get(key)
+        if isinstance(nested, Mapping):
+            recovered = _reasoning_content_from_mapping(nested)
+            if recovered:
+                return recovered
+    return ""
 
 
 def _to_chat_tools(

@@ -89,6 +89,31 @@ async def test_provider_context_summarizer_reports_output_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_context_summarizer_continues_truncated_summary() -> None:
+    provider = FakeProvider([
+        [
+            ProviderEvent.text_delta(0, "durable "),
+            ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens"),
+        ],
+        [
+            ProviderEvent.text_delta(0, "summary"),
+            ProviderEvent.response_completed(StopReason.END_TURN, "end_turn"),
+        ],
+    ])
+
+    result = await ProviderContextSummarizer(provider, "model-a")(
+        SummaryRequest(1, ({"role": "user", "content": []},))
+    )
+
+    assert result == "durable summary"
+    continuation_messages = provider.requests[1].messages[-2:]
+    assert continuation_messages[0]["role"] == "assistant"
+    assert continuation_messages[0]["content"] == [
+        {"type": "text", "text": "durable "}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_provider_context_summarizer_retries_output_limit_with_more_tokens() -> None:
     provider = FakeProvider([
         [
@@ -107,7 +132,7 @@ async def test_provider_context_summarizer_retries_output_limit_with_more_tokens
         SummaryRequest(1, ({"role": "user", "content": []},))
     )
 
-    assert result == "durable summary"
+    assert result == "discarded partialdurable summary"
     assert [request.max_tokens for request in provider.requests] == [8_000, 16_000]
 
 
