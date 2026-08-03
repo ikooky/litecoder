@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass, field
 
 from litecoder.providers import ModelProvider, ModelRequest, StopReason
+from litecoder.providers.completion import complete_text_with_retry
 
 
 MEMORY_SELECTION_SYSTEM_PROMPT = """Select the smallest set of catalog memories that directly improves the user's current request.
@@ -54,27 +55,47 @@ async def complete_side_query_result(
     system: str,
     prompt: str,
     max_tokens: int,
+    max_output_tokens: int | None = None,
 ) -> MemorySideQueryResult:
     """Complete the side query result."""
-    request = ModelRequest(
-        model=model,
-        system=[{"type": "text", "text": system}],
-        messages=[
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": prompt}],
-            }
-        ],
-        tools=[],
-        max_tokens=max_tokens,
+    def request_factory(request_max_tokens: int) -> ModelRequest:
+        return ModelRequest(
+            model=model,
+            system=[{"type": "text", "text": system}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt}],
+                }
+            ],
+            tools=[],
+            max_tokens=request_max_tokens,
+        )
+
+    collection = asyncio.create_task(
+        complete_text_with_retry(
+            provider,
+            request_factory,
+            initial_max_tokens=max_tokens,
+            max_output_tokens=max_output_tokens,
+        )
     )
-    collection = asyncio.create_task(_collect_side_query(provider, request))
     try:
-        return await asyncio.shield(collection)
+        completed = await asyncio.shield(collection)
     except asyncio.CancelledError:
         collection.cancel()
         collection.add_done_callback(_consume_task)
         raise
+    provider_code = (
+        completed.provider_error.code.value
+        if completed.provider_error is not None
+        else None
+    )
+    return MemorySideQueryResult(
+        completed.text,
+        completed.stop_reason,
+        provider_code,
+    )
 
 
 async def complete_side_query(
@@ -84,6 +105,7 @@ async def complete_side_query(
     system: str,
     prompt: str,
     max_tokens: int,
+    max_output_tokens: int | None = None,
 ) -> str | None:
     """Return text only when the provider completed the side query normally."""
     result = await complete_side_query_result(
@@ -92,6 +114,7 @@ async def complete_side_query(
         system=system,
         prompt=prompt,
         max_tokens=max_tokens,
+        max_output_tokens=max_output_tokens,
     )
     if (
         result.provider_code is not None
@@ -100,38 +123,6 @@ async def complete_side_query(
         return None
     return result.text
 
-
-async def _collect_side_query(
-    provider: ModelProvider,
-    request: ModelRequest,
-) -> MemorySideQueryResult:
-    completed: dict[int, str] = {}
-    deltas: list[str] = []
-    stop_reason: StopReason | None = None
-
-    async for event in provider.stream(request):
-        if event.type == "provider.error":
-            code = event.error.code.value if event.error is not None else None
-            return MemorySideQueryResult("", None, code)
-        if event.type == "text.delta" and isinstance(event.delta, str):
-            deltas.append(event.delta)
-        elif (
-            event.type == "content.completed"
-            and event.index is not None
-            and isinstance(event.block, dict)
-            and event.block.get("type") == "text"
-            and isinstance(event.block.get("text"), str)
-        ):
-            completed[event.index] = event.block["text"]
-        elif event.type == "response.completed":
-            stop_reason = event.stop_reason
-
-    text = (
-        "".join(completed[index] for index in sorted(completed))
-        if completed
-        else "".join(deltas)
-    )
-    return MemorySideQueryResult(text, stop_reason)
 
 def _consume_task(task: asyncio.Task[object]) -> None:
     try:

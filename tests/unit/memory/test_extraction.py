@@ -246,6 +246,20 @@ async def test_max_tokens_is_truncated_and_never_parsed_or_written(
                     "max_tokens",
                 ),
             ],
+            [
+                ProviderEvent.text_delta(0, "still partial again"),
+                ProviderEvent.response_completed(
+                    StopReason.MAX_TOKENS,
+                    "max_tokens",
+                ),
+            ],
+            [
+                ProviderEvent.text_delta(0, "still partial final"),
+                ProviderEvent.response_completed(
+                    StopReason.MAX_TOKENS,
+                    "max_tokens",
+                ),
+            ],
         ]
     )
 
@@ -261,12 +275,14 @@ async def test_max_tokens_is_truncated_and_never_parsed_or_written(
     assert result.status == "truncated"
     assert result.limit == 8_000
     assert result.written == 0
-    assert [request.max_tokens for request in provider.requests] == [8_000, 8_000]
+    assert [request.max_tokens for request in provider.requests] == [
+        8_000, 16_000, 16_000, 16_000
+    ]
     assert not store.root.exists()
 
 
 @pytest.mark.asyncio
-async def test_max_tokens_retries_once_and_persists_only_completed_output(
+async def test_max_tokens_retries_with_more_tokens_and_persists_only_completed_output(
     tmp_path: Path,
 ) -> None:
     store = MemoryStore(tmp_path / ".memory")
@@ -291,7 +307,7 @@ async def test_max_tokens_retries_once_and_persists_only_completed_output(
     )
 
     assert result == MemoryExtractionResult(1, 1, 0, 1, "completed", total=1)
-    assert [request.max_tokens for request in provider.requests] == [8_000, 8_000]
+    assert [request.max_tokens for request in provider.requests] == [8_000, 16_000]
     assert store.read("editor").body == "Use Vim keybindings."
 
 
@@ -776,6 +792,9 @@ async def test_explicit_retry_max_tokens_never_parses_or_persists_partial_output
                     "max_tokens",
                 ),
             ],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
         ]
     )
 
@@ -789,5 +808,7 @@ async def test_explicit_retry_max_tokens_never_parses_or_persists_partial_output
     )
 
     assert result == MemoryExtractionResult(0, 0, 0, 0, "empty")
-    assert [request.max_tokens for request in provider.requests] == [8_000, 8_000]
+    assert [request.max_tokens for request in provider.requests] == [
+        8_000, 8_000, 16_000, 16_000, 16_000
+    ]
     assert not store.root.exists()

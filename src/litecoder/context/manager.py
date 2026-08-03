@@ -65,7 +65,7 @@ class ContextManager:
         store: SQLiteSessionStore,
         *,
         model: str,
-        max_tokens: int = 8_000,
+        max_tokens: int = 32_000,
         compaction_policy: CompactionPolicy | None = None,
         context_budget_tokens: int | None = None,
         summarizer: Summarizer | None = None,
@@ -168,7 +168,7 @@ class ContextManager:
         """Connect safe runtime defaults without overriding explicit settings."""
         if self.compaction_policy is None:
             self.compaction_policy = CompactionPolicy()
-            self.context_budget_tokens = 128_000
+            self.context_budget_tokens = 256_000
         if self.summarizer is None:
             self.summarizer = summarizer
 

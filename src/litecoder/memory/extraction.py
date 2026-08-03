@@ -150,28 +150,6 @@ async def extract_memories(
             provider_code=outcome.provider_code,
         )
     if outcome.stop_reason is StopReason.MAX_TOKENS:
-        try:
-            outcome = await complete_side_query_result(
-                provider,
-                model,
-                system=MEMORY_EXTRACTION_SYSTEM_PROMPT,
-                prompt=_extraction_prompt(session_id, messages, catalog),
-                max_tokens=EXTRACTION_MAX_TOKENS,
-            )
-        except Exception:
-            return MemoryExtractionResult(
-                0, 0, 0, 0, "truncated", limit=EXTRACTION_MAX_TOKENS
-            )
-    if outcome.provider_code is not None:
-        return MemoryExtractionResult(
-            0,
-            0,
-            0,
-            0,
-            "provider_failed",
-            provider_code=outcome.provider_code,
-        )
-    if outcome.stop_reason is StopReason.MAX_TOKENS:
         return MemoryExtractionResult(
             0,
             0,

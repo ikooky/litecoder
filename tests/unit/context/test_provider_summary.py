@@ -68,6 +68,14 @@ async def test_provider_context_summarizer_reports_output_limit() -> None:
             ProviderEvent.text_delta(0, "still partial"),
             ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens"),
         ],
+        [
+            ProviderEvent.text_delta(0, "still partial again"),
+            ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens"),
+        ],
+        [
+            ProviderEvent.text_delta(0, "still partial final"),
+            ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens"),
+        ],
     ])
 
     with pytest.raises(
@@ -77,16 +85,36 @@ async def test_provider_context_summarizer_reports_output_limit() -> None:
         await ProviderContextSummarizer(provider, "model-a")(
             SummaryRequest(1, ({"role": "user", "content": []},))
         )
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 4
 
 
 @pytest.mark.asyncio
-async def test_provider_context_summarizer_retries_output_limit_once() -> None:
+async def test_provider_context_summarizer_retries_output_limit_with_more_tokens() -> None:
     provider = FakeProvider([
         [
             ProviderEvent.text_delta(0, "discarded partial"),
             ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens"),
         ],
+        [
+            ProviderEvent.content_block_completed(
+                0, {"type": "text", "text": "durable summary"}
+            ),
+            ProviderEvent.response_completed(StopReason.END_TURN, "end_turn"),
+        ],
+    ])
+
+    result = await ProviderContextSummarizer(provider, "model-a")(
+        SummaryRequest(1, ({"role": "user", "content": []},))
+    )
+
+    assert result == "durable summary"
+    assert [request.max_tokens for request in provider.requests] == [8_000, 16_000]
+
+
+@pytest.mark.asyncio
+async def test_provider_context_summarizer_retries_empty_text() -> None:
+    provider = FakeProvider([
+        [ProviderEvent.response_completed(StopReason.END_TURN, "end_turn")],
         [
             ProviderEvent.content_block_completed(
                 0, {"type": "text", "text": "durable summary"}

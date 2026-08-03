@@ -430,9 +430,9 @@ async def test_runtime_context_manager_enables_compaction_defaults(
 
     assert result.status == "completed"
     assert context.can_compact is True
-    assert context.context_budget_tokens == 128_000
-    assert context.max_tokens == 8_000
-    assert [request.max_tokens for request in provider.requests] == [8_000, 8_000]
+    assert context.context_budget_tokens == 256_000
+    assert context.max_tokens == 32_000
+    assert [request.max_tokens for request in provider.requests] == [32_000, 32_000]
     assert len(provider.requests) == 2
 
 
@@ -502,10 +502,12 @@ async def test_repeated_context_overflow_stops_when_recovery_budget_exhausts(
     assert len(provider.requests) == 2
     await store.close()
 @pytest.mark.asyncio
-async def test_max_tokens_resubmits_within_one_logical_round(tmp_path: Path) -> None:
+async def test_max_tokens_continues_with_expanded_limit_within_one_logical_round(
+    tmp_path: Path,
+) -> None:
     store = await make_store(tmp_path)
     provider = FakeProvider([
-        max_tokens_round("discarded initial truncation"),
+        max_tokens_round("initial truncation"),
         answer_round("complete after expansion"),
     ])
     loop = AgentLoop(
@@ -525,9 +527,11 @@ async def test_max_tokens_resubmits_within_one_logical_round(tmp_path: Path) -> 
         await store.close()
 
     assert result.status == "completed"
-    assert [request.max_tokens for request in provider.requests] == [8_000, 64_000]
-    assert [message.role for message in restored.messages] == ["user", "assistant"]
-    assert "discarded initial truncation" not in str(restored.messages)
+    assert [request.max_tokens for request in provider.requests] == [32_000, 64_000]
+    assert [message.role for message in restored.messages] == [
+        "user", "assistant", "user", "assistant"
+    ]
+    assert "initial truncation" in str(restored.messages)
 
 @pytest.mark.asyncio
 async def test_max_tokens_stops_after_three_atomic_continuations(
@@ -535,8 +539,8 @@ async def test_max_tokens_stops_after_three_atomic_continuations(
 ) -> None:
     store = await make_store(tmp_path)
     provider = FakeProvider([
-        max_tokens_round("discarded initial truncation"),
-        *[max_tokens_round("continued truncation") for _ in range(4)],
+        max_tokens_round("initial truncation"),
+        *[max_tokens_round("continued truncation") for _ in range(3)],
     ])
     loop = AgentLoop(
         store=store,
@@ -556,7 +560,7 @@ async def test_max_tokens_stops_after_three_atomic_continuations(
 
     assert result.status == "incomplete"
     assert result.reason == "continuation budget exhausted"
-    assert [request.max_tokens for request in provider.requests] == [8_000] + [64_000] * 4
+    assert [request.max_tokens for request in provider.requests] == [32_000] + [64_000] * 3
     assert [message.role for message in restored.messages] == [
         "user", "assistant", "user", "assistant", "user", "assistant", "user", "assistant"
     ]

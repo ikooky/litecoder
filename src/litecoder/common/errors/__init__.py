@@ -8,12 +8,19 @@ from litecoder.common.errors.recovery import (
     RecoveryPolicy,
     RecoveryStrategy,
 )
-from litecoder.common.errors.retry import RepairBudget, RetryBudget, RetryDecision
+from litecoder.common.errors.retry import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    RepairBudget,
+    RetryBudget,
+    RetryDecision,
+    next_output_max_tokens,
+)
 from litecoder.common.errors.types import ErrorCode, LiteCoderError
 
 __all__ = [
     "ErrorClassifier",
     "ErrorCode",
+    "DEFAULT_MAX_OUTPUT_TOKENS",
     "FailureOrigin",
     "LiteCoderError",
     "RepairBudget",
@@ -23,4 +30,5 @@ __all__ = [
     "RecoveryStrategy",
     "RetryBudget",
     "RetryDecision",
+    "next_output_max_tokens",
 ]

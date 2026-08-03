@@ -5,6 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+# RetryBudget.max_attempts counts retries after the initial request.
+MODEL_RETRY_MAX_ATTEMPTS = 5
+MODEL_RETRY_BASE_DELAY = 0.5
+MODEL_RETRY_MAX_DELAY = 8.0
+MODEL_CONTINUATION_MAX_ATTEMPTS = 3
+DEFAULT_MAX_OUTPUT_TOKENS = 64_000
+
+
 @dataclass(frozen=True, slots=True)
 class RetryDecision:
     """Data model representing the retry decision."""
@@ -41,6 +49,26 @@ class RetryBudget:
         if self.max_delay:
             delay = min(delay, self.max_delay)
         return RetryDecision(True, delay, attempts + 1)
+
+
+def next_output_max_tokens(
+    current: int,
+    *,
+    cap: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    multiplier: int = 2,
+) -> int:
+    """Return the next bounded output-token limit for a retry."""
+    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
+        raise ValueError("current max_tokens must be a positive integer")
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+        raise ValueError("max_tokens cap must be a positive integer")
+    if current > cap:
+        raise ValueError("current max_tokens must not exceed the cap")
+    if isinstance(multiplier, bool) or not isinstance(multiplier, int) or multiplier < 2:
+        raise ValueError("multiplier must be an integer of at least 2")
+    if current == cap:
+        return current
+    return min(cap, max(current + 1, current * multiplier))
 
 
 @dataclass(slots=True)

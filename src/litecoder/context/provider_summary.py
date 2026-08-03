@@ -7,6 +7,7 @@ import json
 from litecoder.context.compaction import CompactionUnavailable, SummaryRequest
 from litecoder.agent.prompt_policy import CONTEXT_COMPACTION_SYSTEM_PROMPT
 from litecoder.providers.base import ModelProvider
+from litecoder.providers.completion import complete_text_with_retry
 from litecoder.providers.models import ModelRequest, StopReason
 
 
@@ -29,8 +30,8 @@ class ProviderContextSummarizer:
 
     async def __call__(self, request: SummaryRequest) -> str:
         """Handle the value."""
-        for attempt in range(2):
-            model_request = ModelRequest(
+        def request_factory(max_tokens: int) -> ModelRequest:
+            return ModelRequest(
                 model=self.model,
                 system=[{"type": "text", "text": CONTEXT_COMPACTION_SYSTEM_PROMPT}],
                 messages=[{
@@ -48,40 +49,21 @@ class ProviderContextSummarizer:
                     }],
                 }],
                 tools=[],
-                max_tokens=self.max_tokens,
+                max_tokens=max_tokens,
             )
-            blocks: dict[int, str] = {}
-            deltas: list[str] = []
-            stop_reason: StopReason | None = None
-            async for event in self.provider.stream(model_request):
-                if event.type == "provider.error":
-                    raise RuntimeError("summary generation failed")
-                if event.type == "text.delta" and isinstance(event.delta, str):
-                    deltas.append(event.delta)
-                elif (
-                    event.type == "content.completed"
-                    and event.index is not None
-                    and isinstance(event.block, dict)
-                    and event.block.get("type") == "text"
-                    and isinstance(event.block.get("text"), str)
-                ):
-                    blocks[event.index] = event.block["text"]
-                elif event.type == "response.completed":
-                    stop_reason = event.stop_reason
-            if stop_reason is StopReason.MAX_TOKENS and attempt == 0:
-                continue
-            if stop_reason is StopReason.MAX_TOKENS:
-                raise CompactionUnavailable(
-                    "summary generation exceeded output limit"
-                )
-            if stop_reason is not StopReason.END_TURN:
-                raise RuntimeError("summary generation did not complete")
-            text = (
-                "".join(blocks[index] for index in sorted(blocks))
-                if blocks
-                else "".join(deltas)
-            ).strip()
-            if not text:
-                raise RuntimeError("summary generation returned empty text")
-            return text
-        raise AssertionError("summary retry loop exhausted")
+
+        result = await complete_text_with_retry(
+            self.provider,
+            request_factory,
+            initial_max_tokens=self.max_tokens,
+        )
+        if result.provider_error is not None:
+            raise RuntimeError("summary generation failed") from result.provider_error
+        if result.stop_reason is StopReason.MAX_TOKENS:
+            raise CompactionUnavailable("summary generation exceeded output limit")
+        if result.stop_reason is not StopReason.END_TURN:
+            raise RuntimeError("summary generation did not complete")
+        text = result.text.strip()
+        if not text:
+            raise RuntimeError("summary generation returned empty text")
+        return text

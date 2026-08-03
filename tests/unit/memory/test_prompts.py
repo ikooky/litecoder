@@ -74,7 +74,12 @@ async def test_complete_side_query_uses_completed_blocks_in_index_order() -> Non
 
 async def test_complete_side_query_returns_none_when_response_does_not_end_normally() -> None:
     provider = FakeProvider(
-        [[ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")]]
+        [
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+        ]
     )
 
     text = await complete_side_query(
@@ -140,7 +145,10 @@ async def test_side_query_result_preserves_max_tokens_stop_reason() -> None:
                     StopReason.MAX_TOKENS,
                     "max_tokens",
                 ),
-            ]
+            ],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+            [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
         ]
     )
 
@@ -157,12 +165,10 @@ async def test_side_query_result_preserves_max_tokens_stop_reason() -> None:
     assert await complete_side_query(
         FakeProvider(
             [
-                [
-                    ProviderEvent.response_completed(
-                        StopReason.MAX_TOKENS,
-                        "max_tokens",
-                    )
-                ]
+                [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+                [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+                [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
+                [ProviderEvent.response_completed(StopReason.MAX_TOKENS, "max_tokens")],
             ]
         ),
         "model",

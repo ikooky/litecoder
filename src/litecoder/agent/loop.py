@@ -25,6 +25,11 @@ from litecoder.common.errors.recovery import (
     RecoveryContext,
     RecoveryPolicy,
 )
+from litecoder.common.errors.retry import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    MODEL_CONTINUATION_MAX_ATTEMPTS,
+    next_output_max_tokens,
+)
 from litecoder.common.trace import SecretRedactor, TraceContext, TraceSink, bind_secret_redactor
 from litecoder.context.manager import ContextManager
 from litecoder.context.provider_summary import ProviderContextSummarizer
@@ -56,9 +61,8 @@ class Executor(Protocol):
 
 RecoverySleep = Callable[[float], object]
 
-INITIAL_OUTPUT_MAX_TOKENS = 8_000
-MAX_OUTPUT_MAX_TOKENS = 64_000
-MAX_CONTINUATIONS = 3
+INITIAL_OUTPUT_MAX_TOKENS = 32_000
+MAX_CONTINUATIONS = MODEL_CONTINUATION_MAX_ATTEMPTS
 TODO_REMINDER_TOOL_ROUNDS = 3
 MAX_CONCURRENT_TOOL_CALLS = 4
 
@@ -404,7 +408,7 @@ class AgentLoop:
         status, reason = "incomplete", "round budget exhausted"
         memory_mutated = False
         output_token_limit = INITIAL_OUTPUT_MAX_TOKENS
-        max_tokens_resubmitted = False
+        max_tokens_expanded = False
         continuations = 0
         reactive_compaction_attempted = False
         response_repair_feedback: str | None = None
@@ -496,19 +500,8 @@ class AgentLoop:
                     session_id, blocks, stop_reason, round_usage, provider_error
                 )
                 continue
-            if stop_reason is StopReason.MAX_TOKENS and not max_tokens_resubmitted:
-                if _token_budget_exhausted(usage, self.budgets.max_tokens):
-                    status, reason = "incomplete", "token budget exhausted"
-                    break
-                max_tokens_resubmitted = True
-                output_token_limit = MAX_OUTPUT_MAX_TOKENS
-                await self._post_model_call(
-                    session_id, blocks, stop_reason, round_usage, provider_error
-                )
-                continue
             if (
                 stop_reason is StopReason.MAX_TOKENS
-                and max_tokens_resubmitted
                 and terminal_recovery is None
             ):
                 assistant_message = MessageRecord(
@@ -531,6 +524,12 @@ class AgentLoop:
                     )
                     status, reason = "incomplete", "continuation budget exhausted"
                     break
+                if not max_tokens_expanded:
+                    output_token_limit = next_output_max_tokens(
+                        output_token_limit,
+                        cap=DEFAULT_MAX_OUTPUT_TOKENS,
+                    )
+                    max_tokens_expanded = True
                 continuations += 1
                 await self.store.append_messages(
                     [assistant_message, _continuation_message(session_id)]
@@ -632,7 +631,7 @@ class AgentLoop:
                 )
                 rounds_since_todo = 0
             output_token_limit = INITIAL_OUTPUT_MAX_TOKENS
-            max_tokens_resubmitted = False
+            max_tokens_expanded = False
             continuations = 0
             round_number += 1
         if status in {"continue_tools", "continue_provider"}:
