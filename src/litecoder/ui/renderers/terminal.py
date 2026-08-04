@@ -48,7 +48,6 @@ class TerminalRenderer:
     workspace_root: Path | None
     _assistant_buffer: list[str]
     _tool_invocation_keys: set[str]
-    _tool_invocations: int
     _memory_count: int
     _tool_starts: dict[str, RuntimeUIEvent]
     _tool_call_completions: dict[str, RuntimeUIEvent]
@@ -66,7 +65,6 @@ class TerminalRenderer:
         _configure_unicode_output(self.console)
         self._assistant_buffer = []
         self._tool_invocation_keys = set()
-        self._tool_invocations = 0
         self._memory_count = 0
         self._tool_starts = {}
         self._tool_call_completions = {}
@@ -81,8 +79,6 @@ class TerminalRenderer:
             self._assistant_delta(event)
         elif event.type is UIEventType.ASSISTANT_COMPLETED:
             self._assistant_completed(event)
-        elif event.type is UIEventType.THINKING_DELTA:
-            self._thinking_delta(event)
         elif event.type is UIEventType.TOOL_CALL_COMPLETED:
             self._tool_call_completed(event)
         elif event.type is UIEventType.TOOL_EXECUTION_STARTED:
@@ -133,7 +129,6 @@ class TerminalRenderer:
     def _turn_started(self) -> None:
         self._assistant_buffer.clear()
         self._tool_invocation_keys.clear()
-        self._tool_invocations = 0
         self._memory_count = 0
         self._tool_starts.clear()
         self._tool_call_completions.clear()
@@ -182,9 +177,6 @@ class TerminalRenderer:
         with terminal_state.suspend_waiting_status(self.console):
             self.console.print(Segments(segments), end="", soft_wrap=True)
 
-    def _thinking_delta(self, event: RuntimeUIEvent) -> None:
-        _string_payload(event, "text")
-
     def _tool_call_completed(self, event: RuntimeUIEvent) -> None:
         if event.tool_call_id is not None:
             self._tool_call_completions[event.tool_call_id] = event
@@ -212,9 +204,7 @@ class TerminalRenderer:
 
     def _record_tool_invocation(self, event: RuntimeUIEvent) -> str:
         key = _tool_key(event)
-        if key not in self._tool_invocation_keys:
-            self._tool_invocation_keys.add(key)
-            self._tool_invocations += 1
+        self._tool_invocation_keys.add(key)
         if (
             event.type is UIEventType.TOOL_EXECUTION_STARTED
             or key not in self._tool_starts
@@ -286,7 +276,7 @@ class TerminalRenderer:
         request = f" request={event.request_id}" if event.request_id else ""
         retryable = event.payload.get("retryable") is True
         retrying_value = event.payload.get("retrying")
-        retrying = retryable if retrying_value is None else retrying_value is True
+        retrying = retryable if retrying_value is None else bool(retrying_value)
         attempt = event.payload.get("attempt")
         max_attempts = event.payload.get("max_attempts")
         has_progress = (
@@ -305,7 +295,6 @@ class TerminalRenderer:
         self._print_atomic(
             Text(f"Provider error{request} {detail}".rstrip(), style="red")
         )
-
     def _diagnostic(self, event: RuntimeUIEvent) -> None:
         message = _string_payload(event, "message")
         if not message:
@@ -320,7 +309,7 @@ class TerminalRenderer:
             "",
             Text(
                 _turn_finished_text(
-                    event, self._tool_invocations, self._memory_count
+                    event, len(self._tool_invocation_keys), self._memory_count
                 ),
                 style="dim",
             ),
@@ -670,9 +659,7 @@ def _mapping_preview(
         for key, item in value.items():
             if key == "path":
                 continue
-            if isinstance(item, (str, int, float, bool)) and not isinstance(item, bool):
-                parts.append(f"{key}={item}")
-            elif isinstance(item, bool):
+            if isinstance(item, (str, int, float, bool)):
                 parts.append(f"{key}={item}")
         return ", ".join(parts)
     return _json_preview(value)

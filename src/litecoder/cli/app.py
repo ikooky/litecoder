@@ -517,8 +517,6 @@ def _default_permission_prompt_for_sink(
     console = _console_from_ui_sink(ui_sink)
 
     async def prompt(prompt: ToolPermissionPrompt) -> PromptChoice:
-        if console is None:
-            return _select_permission_choice(prompt)
         return _select_permission_choice(prompt, console=console)
 
     return prompt
@@ -551,7 +549,7 @@ def _runtime_secrets(settings: Settings) -> tuple[tuple[str, ...], tuple[str, ..
     values: list[str] = []
     for provider_name, provider in settings.providers.items():
         environment_name = provider.api_key_env
-        if environment_name is None and provider.type == "anthropic":
+        if environment_name is None and provider.type == "anthropic-messages":
             environment_name = "ANTHROPIC_API_KEY"
         if environment_name:
             environment_names.append(environment_name)

@@ -36,7 +36,7 @@ class MemoryService:
     def system_payload(self) -> dict[str, object]:
         """Handle the system payload operation."""
         try:
-            index = self.store.read_index() if self.store.index_exists() else ""
+            index = self.store.read_index()
         except Exception:
             index = ""
         return {

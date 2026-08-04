@@ -13,6 +13,7 @@ from litecoder.common.trace.redaction import (
     SecretRedactor,
     current_secret_redactor,
 )
+from litecoder.common.text import truncate_utf8_text
 
 
 _TRACE_TEXT_BYTES = 1_000
@@ -124,7 +125,7 @@ def _trace_identity_value(value: object, redactor: SecretRedactor) -> object:
             return redacted
         return {
             "type": "text",
-            "preview": _truncate_utf8(redacted, _TRACE_TEXT_BYTES),
+            "preview": truncate_utf8_text(redacted, _TRACE_TEXT_BYTES),
             "bytes": byte_count,
             "truncated": True,
         }
@@ -154,7 +155,7 @@ def _trace_value(
             return redacted
         return {
             "type": "text",
-            "preview": _truncate_utf8(redacted, _TRACE_TEXT_BYTES),
+            "preview": truncate_utf8_text(redacted, _TRACE_TEXT_BYTES),
             "bytes": byte_count,
             "truncated": True,
         }
@@ -287,7 +288,7 @@ def _compact_trace_payload(
 def _unique_trace_key(
     key: object, occupied: Mapping[str, object], redactor: SecretRedactor
 ) -> str:
-    base = _truncate_utf8(
+    base = truncate_utf8_text(
         redactor.redact_text(str(key)), _TRACE_KEY_BYTES
     )
     candidate = base
@@ -296,13 +297,6 @@ def _unique_trace_key(
         candidate = f"{base}#{suffix}"
         suffix += 1
     return candidate
-
-
-def _truncate_utf8(value: str, limit: int) -> str:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    return encoded[:limit].decode("utf-8", errors="ignore")
 
 
 def _type_name(value: object) -> str:

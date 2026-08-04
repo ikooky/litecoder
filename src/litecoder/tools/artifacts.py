@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from litecoder.common.text import truncate_utf8_text
 from litecoder.common.trace import SecretRedactor
 
 
@@ -116,7 +117,7 @@ class ArtifactStore:
         path = await asyncio.to_thread(self._write_atomic, digest, redacted)
         return ArtifactReference(
             path=path,
-            preview=_truncate_utf8(redacted, ARTIFACT_PREVIEW_BYTES),
+            preview=truncate_utf8_text(redacted, ARTIFACT_PREVIEW_BYTES),
             bytes=len(redacted.encode("utf-8")),
             tool_call_id_sha256=digest,
         )
@@ -139,8 +140,3 @@ class ArtifactStore:
         return target
 
 
-def _truncate_utf8(value: str, limit: int) -> str:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    return encoded[:limit].decode("utf-8", errors="ignore")

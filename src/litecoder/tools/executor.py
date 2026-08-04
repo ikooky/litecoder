@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from jsonschema.exceptions import SchemaError, ValidationError
 
 from litecoder.common.locks import NamedFileLock
+from litecoder.common.text import truncate_utf8_text
 from litecoder.common.trace import bind_secret_redactor, current_secret_redactor
 from litecoder.hooks import HookDiagnostic, HookManager, HookPoint
 from litecoder.providers._json import JsonValue
@@ -762,7 +763,7 @@ class ToolExecutor:
             await self._fact(
                 "artifact", call, status="failed", automatic_retry=False
             )
-            preview = _truncate_utf8(result.content, ARTIFACT_PREVIEW_BYTES)
+            preview = truncate_utf8_text(result.content, ARTIFACT_PREVIEW_BYTES)
             content = (
                 f"{preview}\n\n" if preview else ""
             ) + "[Full tool output unavailable: artifact persistence failed.]"
@@ -977,7 +978,7 @@ _TOOL_UI_TEXT_BYTES = 1_000
 def _safe_ui_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
-    return _truncate_utf8(
+    return truncate_utf8_text(
         current_secret_redactor().redact_text(value), _TOOL_UI_TEXT_BYTES
     )
 
@@ -1014,19 +1015,25 @@ def _bounded_metadata(metadata: dict[object, object]) -> dict[str, object]:
     )
     priority_keys = tuple(key for key in priority if key in metadata)
     remaining_keys = (key for key in metadata if key not in priority)
+    running_bytes = 2  # opening/closing braces "{}"
     for key in chain(priority_keys, remaining_keys):
         if not isinstance(key, str):
             truncated = True
             continue
         value, value_truncated = _bounded_json_value(metadata[key])
-        candidate = {**bounded, key: value}
-        if len(_json_bytes(candidate)) > _RESULT_METADATA_BYTES:
+        # Cost of adding this entry: encoded key + value + the ',' or ':' delimiters.
+        # len(',\"key\":') == len(key) + 4 (comma, two quotes, colon); +1 when not first.
+        entry_bytes = len(_json_bytes(value)) + len(key) + 4 + (1 if bounded else 0)
+        if running_bytes + entry_bytes > _RESULT_METADATA_BYTES:
             truncated = True
             continue
         bounded[key] = value
+        running_bytes += entry_bytes
         truncated = truncated or value_truncated
     if truncated:
         bounded["metadata_truncated"] = True
+        # The flag itself adds bytes; fall back to exact serialization only when
+        # pruning individual entries, which is the genuinely over-budget path.
         while len(_json_bytes(bounded)) > _RESULT_METADATA_BYTES:
             removable = next(
                 (
@@ -1053,7 +1060,7 @@ def _bounded_metadata(metadata: dict[object, object]) -> dict[str, object]:
 
 def _bounded_json_value(value: object) -> tuple[object, bool]:
     if isinstance(value, str):
-        rendered = _truncate_utf8(value, _RESULT_METADATA_STRING_BYTES)
+        rendered = truncate_utf8_text(value, _RESULT_METADATA_STRING_BYTES)
         return rendered, rendered != value
     if isinstance(value, list):
         items: list[object] = []
@@ -1081,13 +1088,6 @@ def _json_bytes(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, separators=(",", ":")
     ).encode("utf-8")
-
-
-def _truncate_utf8(value: str, limit: int) -> str:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    return encoded[:limit].decode("utf-8", errors="ignore")
 
 
 def _artifact_result_content(reference: ArtifactReference) -> str:

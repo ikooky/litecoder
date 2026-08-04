@@ -463,7 +463,7 @@ class PresentationReducer:
         message = optional_text(event.payload.get("message"))
         retryable = event.payload.get("retryable") is True
         retrying_value = event.payload.get("retrying")
-        retrying = retryable if retrying_value is None else retrying_value is True
+        retrying = retryable if retrying_value is None else bool(retrying_value)
         attempt = _non_negative_int(event.payload.get("attempt"))
         maximum = _non_negative_int(event.payload.get("max_attempts"))
         if retrying:

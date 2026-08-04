@@ -80,9 +80,9 @@ def _is_failed_memory_extraction(payload: Mapping[str, object]) -> bool:
     if payload.get("operation") != "extract":
         return False
     status = payload.get("status")
-    if status in _FAILED_MEMORY_EXTRACTION_STATUSES:
-        return True
-    return status == "partial_rejected" and payload.get("written") == 0
+    return status in _FAILED_MEMORY_EXTRACTION_STATUSES or (
+        status == "partial_rejected" and payload.get("written") == 0
+    )
 
 
 def _consume_memory_diagnostics(
@@ -560,19 +560,19 @@ class AgentLoop:
             if _token_budget_exhausted(usage, self.budgets.max_tokens):
                 status, reason = "incomplete", "token budget exhausted"
                 break
-            todo_items = await self._todo_reminder_items(session_id)
-            if (
-                status == "completed"
-                and not final_todo_reconciliation_attempted
-                and round_number < self.budgets.max_rounds
-                and _has_open_todos(todo_items)
-            ):
-                final_todo_reconciliation_attempted = True
-                await self.store.append_message(
-                    _todo_reminder_message(session_id, todo_items)
-                )
-                round_number += 1
-                continue
+            if status == "completed":
+                todo_items = await self._todo_reminder_items(session_id)
+                if (
+                    not final_todo_reconciliation_attempted
+                    and round_number < self.budgets.max_rounds
+                    and _has_open_todos(todo_items)
+                ):
+                    final_todo_reconciliation_attempted = True
+                    await self.store.append_message(
+                        _todo_reminder_message(session_id, todo_items)
+                    )
+                    round_number += 1
+                    continue
             if status not in {"continue_tools", "continue_provider"}:
                 break
             if outcome.consumes_continuation:

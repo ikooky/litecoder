@@ -375,28 +375,39 @@ def _find_all_positions(value: str, needle: str) -> list[int]:
         start = position + 1
 
 
+_OVERRIDE_TERMS = tuple(
+    (term, "verb") for term in _OVERRIDE_VERBS
+) + tuple(
+    (term, "target") for term in _PROTECTED_TARGETS
+) + tuple(
+    (term, "noun") for term in _INSTRUCTION_NOUNS
+)
+_OVERRIDE_PATTERN = re.compile(
+    "|".join(re.escape(term) for term, _ in _OVERRIDE_TERMS)
+)
+
+
+def _find_all_positions(value: str, needle: str) -> list[int]:
+    positions: list[int] = []
+    start = 0
+    while True:
+        position = value.find(needle, start)
+        if position < 0:
+            return positions
+        positions.append(position)
+        start = position + 1
+
+
 def _contains_multilingual_override(content: str) -> bool:
     compact = re.sub(r"\s+", "", content)
-    verb_positions = [
-        position
-        for verb in _OVERRIDE_VERBS
-        for position in _find_all_positions(compact, verb)
+    # Single pass over the compacted text instead of one str.find scan per term
+    # (14 terms previously meant 14 linear traversals).
+    label_by_term = {term: label for term, label in _OVERRIDE_TERMS}
+    occurrences: list[tuple[int, str]] = [
+        (match.start(), label_by_term[match.group()])
+        for match in _OVERRIDE_PATTERN.finditer(compact)
     ]
-    target_positions = [
-        position
-        for target in _PROTECTED_TARGETS
-        for position in _find_all_positions(compact, target)
-    ]
-    noun_positions = [
-        position
-        for noun in _INSTRUCTION_NOUNS
-        for position in _find_all_positions(compact, noun)
-    ]
-    occurrences = sorted(
-        [(position, "verb") for position in verb_positions]
-        + [(position, "target") for position in target_positions]
-        + [(position, "noun") for position in noun_positions]
-    )
+    occurrences.sort(key=lambda occurrence: occurrence[0])
     category_counts = {"verb": 0, "target": 0, "noun": 0}
     left = 0
     for position, category in occurrences:

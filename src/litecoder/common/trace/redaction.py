@@ -37,6 +37,11 @@ class _ProtectedText(str):
 class SecretRedactor:
     """Data model representing the secret redactor."""
     values: tuple[str, ...] = field(repr=False)
+    # Caches for the per-instance marker unit and marker; the frozen dataclass
+    # keeps ``values`` immutable so these never need recompute. Pre-declared so
+    # the field list stays explicit rather than mutating __dict__ ad hoc.
+    _safe_unit_value: str | None = field(default=None, repr=False, compare=False)
+    _marker_value_cache: str | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def with_values(cls, values: Iterable[str]) -> SecretRedactor:
@@ -44,14 +49,36 @@ class SecretRedactor:
         unique_values = {value for value in values if value}
         return cls(tuple(sorted(unique_values, key=len, reverse=True)))
 
+    @property
+    def _safe_unit(self) -> str:
+        """The per-instance marker unit, cached for the lifetime of the redactor.
+
+        Scanning ~6,400 Unicode code points for an unused character is deterministic
+        per ``values`` but was previously recomputed on every ``redact_text`` call.
+        """
+        cached = self._safe_unit_value
+        if cached is None:
+            cached = _safe_unit(self.values)
+            object.__setattr__(self, "_safe_unit_value", cached)
+        return cached
+
+    @property
+    def _marker_value(self) -> str:
+        """The redaction marker, cached for the lifetime of the redactor."""
+        cached = self._marker_value_cache
+        if cached is None:
+            cached = (
+                _DEFAULT_REDACTED
+                if _safe_generated(_DEFAULT_REDACTED, self.values)
+                else self._safe_unit
+            )
+            object.__setattr__(self, "_marker_value_cache", cached)
+        return cached
+
     def redact_text(self, value: str) -> str:
         """Handle the redact text operation."""
-        safe_unit = _safe_unit(self.values)
-        marker = (
-            _DEFAULT_REDACTED
-            if _safe_generated(_DEFAULT_REDACTED, self.values)
-            else safe_unit
-        )
+        safe_unit = self._safe_unit
+        marker = self._marker_value
         fragments = _protected_fragments(
             value,
             values=self.values,
@@ -76,6 +103,8 @@ class SecretRedactor:
         return value
 
     def _redact_mapping(self, value: dict[object, object]) -> dict[object, object]:
+        safe_unit = self._safe_unit
+        marker = self._marker_value
         entries: list[tuple[int, object, object, bool]] = []
         reserved: set[object] = set()
         for position, (key, item) in enumerate(value.items(), 1):
@@ -87,8 +116,6 @@ class SecretRedactor:
 
         result: dict[object, object] = {}
         occupied = set(reserved)
-        marker = self._marker()
-        safe_unit = _safe_unit(self.values)
         for position, original_key, item, changed in entries:
             output_key = original_key
             if changed:
@@ -113,11 +140,6 @@ class SecretRedactor:
             )
             result[output_key] = output_value
         return result
-
-    def _marker(self) -> str:
-        if _safe_generated(_DEFAULT_REDACTED, self.values):
-            return _DEFAULT_REDACTED
-        return _safe_unit(self.values)
 
 
 _EMPTY_REDACTOR = SecretRedactor.with_values(())

@@ -9,8 +9,8 @@ import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterator
 
+from litecoder.common.text import truncate_utf8 as _truncate_utf8_impl
 from litecoder.tools.models import ToolDenied, ToolFailure
-
 
 MAX_FILE_BYTES = 1024 * 1024
 MAX_OUTPUT_BYTES = 64 * 1024
@@ -224,11 +224,12 @@ def decode_utf8_text(data: bytes, *, safe_message: str) -> str:
 
 
 def truncate_utf8(value: str, limit: int = MAX_OUTPUT_BYTES) -> tuple[str, bool]:
-    """Handle the truncate utf8 operation."""
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value, False
-    return encoded[:limit].decode("utf-8", errors="ignore"), True
+    """Truncate ``value`` to at most ``limit`` bytes on a UTF-8 boundary.
+
+    Delegates to :func:`litecoder.common.text.truncate_utf8`, defaulting the
+    limit to :data:`MAX_OUTPUT_BYTES` for the built-in tools.
+    """
+    return _truncate_utf8_impl(value, limit)
 
 
 def _is_within(root: Path, candidate: Path) -> bool:

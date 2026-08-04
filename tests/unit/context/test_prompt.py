@@ -597,9 +597,15 @@ def test_memory_service_system_payload_is_safe_when_index_disappears(
 
         def index_exists(self) -> bool:
             index = self.root / "MEMORY.md"
-            self.index_existed = index.is_file()
-            index.unlink()
+            index_existed = index.is_file()
+            index.unlink(missing_ok=True)
             return True
+
+        def read_index(self) -> str:
+            index = self.root / "MEMORY.md"
+            self.index_existed = index.is_file()
+            index.unlink(missing_ok=True)
+            return super().read_index()
 
     missing = MemoryService(
         MemoryStore(tmp_path / "missing"),

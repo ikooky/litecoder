@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from litecoder.context.session.models import MessageRecord
 from litecoder.context.token_budget import _non_negative_integer, estimate_tokens
+from litecoder.common.text import truncate_utf8_text
 
 
 DEFAULT_TOOL_RESULT_BUDGET_DIVISOR = 2
@@ -354,7 +355,7 @@ def _compact_tool_result(block: dict[str, object], preview_tokens: int) -> None:
             separators=(",", ":"),
         )
     original_bytes = len(content.encode("utf-8"))
-    preview = _utf8_prefix(content, preview_tokens * 4)
+    preview = truncate_utf8_text(content, preview_tokens * 4)
     compacted = f"{preview}\n[compacted:{original_bytes}B]"
     if estimate_tokens(compacted) < estimate_tokens(content):
         block["content"] = compacted
@@ -451,12 +452,3 @@ def _positive_integer(value: object, field_name: str) -> int:
     if value == 0:
         raise ValueError(f"{field_name} must be a positive integer")
     return value
-
-
-def _utf8_prefix(value: str, limit: int) -> str:
-    if limit <= 0:
-        return ""
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    return encoded[:limit].decode("utf-8", errors="ignore")
