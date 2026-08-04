@@ -180,6 +180,7 @@ class EvalOrchestrator:
                 if len(candidates) == 1 and candidate.name == "primary"
                 else prepare_candidate(paths, spec, candidate)
             )
+            plugin.prepare_candidate(spec, candidate_paths, candidate)
             report, evidence = await self._run_candidate_once(
                 run_spec, spec, candidate_paths, plugin, candidate
             )

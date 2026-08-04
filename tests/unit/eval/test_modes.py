@@ -17,6 +17,7 @@ from litecoder.eval.domain import (
     Metric,
     ValidationResult,
 )
+from litecoder.eval.memory_fixture import fixture_for
 from litecoder.eval.modes.agent_benchmark import AgentBenchmarkMode
 from litecoder.eval.modes.context_manager import ContextManagerMode
 from litecoder.eval.modes.memory import MemoryMode
@@ -113,9 +114,11 @@ async def test_context_memory_and_task_state_modes_define_production_experiments
     ]
     assert context_candidates[0].setup_prompt == context_candidates[1].setup_prompt
     assert context_candidates[0].context_compaction == "disabled"
+    assert context_candidates[0].context_budget_tokens is None
     assert context_candidates[1].context_compaction == "enabled"
-    assert context_candidates[1].context_budget_tokens == 4_096
-    assert estimate_tokens(context_candidates[1].setup_prompt) > 4_096
+    assert context_candidates[1].context_budget_tokens == 8_000
+    assert context_candidates[1].setup_prompt.count("diagnostic-") == 500
+    assert estimate_tokens(context_candidates[1].setup_prompt) > 7_500
     assert "## Setup turn" in context_candidates[1].artifact_prompt()
     assert "## Execution turn" in context_candidates[1].artifact_prompt()
     context_marker = re.search(
@@ -151,21 +154,23 @@ async def test_context_memory_and_task_state_modes_define_production_experiments
     memory_spec, memory_paths, memory_execution = _mode_case(tmp_path, "memory")
     memory_mode = MemoryMode()
     memory_candidates = memory_mode.candidates(memory_spec)
-    assert [candidate.name for candidate in memory_candidates] == [
-        "control",
-        "treatment",
-        "distractor",
-    ]
-    assert memory_candidates[0].restart_after_setup is True
-    assert memory_candidates[0].memory_recall == "disabled"
-    assert memory_candidates[1].memory_recall == "enabled"
-    assert memory_candidates[0].setup_prompt == memory_candidates[1].setup_prompt
-    marker = re.search(
-        r"marker=(LITECODER_EVAL_MEMORY_[0-9a-f]+)",
-        memory_candidates[1].setup_prompt,
+    assert [candidate.name for candidate in memory_candidates] == ["primary"]
+    assert memory_candidates[0].restart_after_setup is False
+    assert memory_candidates[0].setup_prompt == ""
+    assert memory_candidates[0].memory_recall == "enabled"
+    memory_mode.prepare_candidate(memory_spec, memory_paths, memory_candidates[0])
+    fixture = fixture_for(memory_spec)
+    assert len(fixture.entries) == 9
+    assert len(list((memory_paths.solution.parent / ".memory").glob("*.md"))) == 10
+    other_spec = CaseSpec(
+        "case-0002",
+        memory_spec.task_id,
+        memory_spec.dataset,
+        memory_spec.entry_point,
+        memory_spec.starter_code,
+        memory_spec.mode,
     )
-    assert marker is not None
-    assert marker.group(1) not in memory_candidates[1].prompt
+    assert fixture.fixture_id != fixture_for(other_spec).fixture_id
 
     task_spec, task_paths, task_execution = _mode_case(tmp_path, "task-state")
     task_mode = TaskStateMode()
@@ -405,91 +410,56 @@ async def test_tools_hooks_mode_rejects_unexercised_terminal_path(
 
 
 @pytest.mark.asyncio
-async def test_memory_mode_requires_recalled_marker_for_causal_success(
+async def test_memory_mode_scores_selection_and_marker_metrics(
     tmp_path: Path,
 ) -> None:
     spec, paths, execution = _mode_case(tmp_path, "memory")
     mode = MemoryMode()
     candidates = mode.candidates(spec)
-    marker_match = re.search(
-        r"marker=(LITECODER_EVAL_MEMORY_[0-9a-f]+)",
-        candidates[1].setup_prompt,
-    )
-    assert marker_match is not None
+    fixture = fixture_for(spec)
+    mode.prepare_candidate(spec, paths, candidates[0])
     marked_execution = AgentExecution(
         execution.status,
         execution.reason,
-        execution.solution + f"# {marker_match.group(1)}\n",
+        execution.solution + f"# {fixture.marker}\n",
         execution.input_tokens,
         execution.output_tokens,
         execution.elapsed_seconds,
         {
-            "candidate_name": Metric("candidate_name", "treatment"),
-            "memory_recalled_items": Metric("memory_recalled_items", 1),
+            "candidate_name": Metric("candidate_name", "primary"),
+            "memory_recalled_items": Metric("memory_recalled_items", 4),
             "memory_recalled_ids": Metric(
-                "memory_recalled_ids", '["evalplus-current-task"]'
+                "memory_recalled_ids",
+                json.dumps(
+                    sorted(fixture.relevant_names | {"evalplus-other-task-a"})
+                ),
             ),
         },
     )
     measurement = await mode.measure(spec, paths, marked_execution)
-    assert measurement.metrics["memory_marker_retained"].value == 1
+    assert measurement.metrics["memory_correct_marker_written"].value == 1
+    assert measurement.metrics["memory_relevant_count"].value == 3
+    assert measurement.metrics["memory_true_positive_count"].value == 3
+    assert measurement.metrics["memory_false_positive_count"].value == 1
+    assert measurement.metrics["memory_recall_rate"].value == 1.0
+    assert measurement.metrics["memory_precision_rate"].value == 0.75
     validation = ValidationResult(True, "pass", "pass", 0, None, 0.1)
-
-    def report(
-        name: str, recalled: int, retained: int, rejected: int
-    ) -> CandidateReport:
-        recalled_ids = {
-            "control": [],
-            "treatment": ["evalplus-current-task"],
-            "distractor": ["evalplus-current-task", "unrelated-task"],
-        }[name]
-        true_positive = int("evalplus-current-task" in recalled_ids)
-        false_negative = 1 - true_positive
-        false_positive = len(recalled_ids) - true_positive
-        return CandidateReport(
-            name,
+    reports = {
+        "primary": CandidateReport(
+            "primary",
             "passed",
             CaseStage.SCORED,
             paths,
-            execution,
+            marked_execution,
             validation,
-            {
-                "memory_recalled_items": Metric("memory_recalled_items", recalled),
-                "memory_recalled_ids": Metric(
-                    "memory_recalled_ids", json.dumps(recalled_ids)
-                ),
-                "memory_marker_retained": Metric("memory_marker_retained", retained),
-                "distractor_marker_rejected": Metric(
-                    "distractor_marker_rejected", rejected
-                ),
-                "memory_relevant_count": Metric("memory_relevant_count", 1),
-                "memory_retrieved_count": Metric(
-                    "memory_retrieved_count", len(recalled_ids)
-                ),
-                "memory_true_positive_count": Metric(
-                    "memory_true_positive_count", true_positive
-                ),
-                "memory_false_negative_count": Metric(
-                    "memory_false_negative_count", false_negative
-                ),
-                "memory_false_positive_count": Metric(
-                    "memory_false_positive_count", false_positive
-                ),
-            },
+            measurement.metrics,
         )
-
-    reports = {
-        "control": report("control", 0, 0, 1),
-        "treatment": report("treatment", 1, 1, 1),
-        "distractor": report("distractor", 2, 1, 1),
     }
     combined = mode.combine_metrics(reports)
 
-    assert combined["control_memory_success"].value == 0
-    assert combined["treatment_memory_success"].value == 1
-    assert combined["treatment_uplift"].value == 1.0
-    assert combined["treatment_memory_true_positive_count"].value == 1
-    assert combined["distractor_memory_false_positive_count"].value == 1
+    assert combined["primary_memory_success"].value == 1
+    assert combined["primary_memory_true_positive_count"].value == 3
+    assert "memory_hit_at_1" not in combined
     assert mode.score(reports) == ("passed", "")
 
     aggregate_case = CaseReport(
@@ -501,33 +471,44 @@ async def test_memory_mode_requires_recalled_marker_for_causal_success(
         validation,
         {
             **combined,
-            "treatment_all_memory_tokens": Metric(
-                "treatment_all_memory_tokens", 10_000
+            "primary_all_memory_tokens": Metric(
+                "primary_all_memory_tokens", 10_000
             ),
-            "treatment_optimized_memory_tokens": Metric(
-                "treatment_optimized_memory_tokens", 3_500
-            ),
-            "distractor_all_memory_tokens": Metric(
-                "distractor_all_memory_tokens", 10_000
-            ),
-            "distractor_optimized_memory_tokens": Metric(
-                "distractor_optimized_memory_tokens", 3_500
+            "primary_optimized_memory_tokens": Metric(
+                "primary_optimized_memory_tokens", 3_500
             ),
         },
     )
     aggregate = mode.aggregate((aggregate_case,))
     assert aggregate.primary["memory_context_reduction_rate"].value == 0.65
     assert aggregate.primary["memory_recall_rate"].value == 1.0
-    assert aggregate.primary["memory_accuracy"].value == 2 / 3
+    assert aggregate.primary["memory_precision_rate"].value == 0.75
+    assert aggregate.primary["memory_false_positive_count"].value == 1
 
-    contaminated = {
-        **reports,
-        "control": report("control", 0, 1, 1),
-    }
-    assert mode.score(contaminated) == (
-        "invalid",
-        "control retained the marker without memory recall",
+    contaminated = CandidateReport(
+        "primary",
+        "passed",
+        CaseStage.SCORED,
+        paths,
+        AgentExecution(
+            marked_execution.status,
+            marked_execution.reason,
+            marked_execution.solution
+            + f"# {next(iter(fixture.adversarial_markers))}\n",
+            marked_execution.input_tokens,
+            marked_execution.output_tokens,
+            marked_execution.elapsed_seconds,
+            marked_execution.metrics,
+        ),
+        validation,
+        {
+            **measurement.metrics,
+            "memory_wrong_marker_written": Metric(
+                "memory_wrong_marker_written", 1
+            ),
+        },
     )
+    assert mode.score({"primary": contaminated})[0] == "failed"
 
     unscoreable = CaseReport(
         spec,
@@ -539,6 +520,6 @@ async def test_memory_mode_requires_recalled_marker_for_causal_success(
         {},
     )
     aggregate = mode.aggregate((unscoreable,))
-    assert aggregate.primary["cross_session_treatment_success_rate"].value == "N/A"
-    assert aggregate.primary["memory_success_uplift"].value == "N/A"
+    assert aggregate.primary["memory_task_success_rate"].value == "N/A"
+    assert aggregate.primary["memory_precision_rate"].value == "N/A"
     assert aggregate.guardrails["task_pass_rate"].value == "N/A"

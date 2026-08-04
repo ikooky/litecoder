@@ -91,7 +91,7 @@ def test_full_suite_uses_one_root_and_one_run_per_mode(
     )
     assert sum(len(call["tasks"]) for call in calls) == 60
     assert all(call["tasks"] == calls[0]["tasks"] for call in calls)
-    assert all(call["datasets"] == ("humaneval", "mbpp") for call in calls)
+    assert all(call["datasets"] == ("humaneval",) for call in calls)
     assert all((suite_root / mode / "run.json").exists() for mode, _ in eval_suite.RUN_SPECS)
     assert all((suite_root / mode / "report.md").exists() for mode, _ in eval_suite.RUN_SPECS)
     assert (suite_root / "suite.json").exists()

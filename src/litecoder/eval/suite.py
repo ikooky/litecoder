@@ -31,10 +31,9 @@ RUN_SPECS: tuple[tuple[str, int], ...] = (
     ("memory", 12),
     ("task-state", 12),
 )
-DATASETS: tuple[DatasetName, ...] = ("humaneval", "mbpp")
+DATASETS: tuple[DatasetName, ...] = ("humaneval",)
 SHARED_DATASET_LIMITS: tuple[tuple[DatasetName, int], ...] = (
-    ("humaneval", 6),
-    ("mbpp", 6),
+    ("humaneval", 12),
 )
 SUITE_SEED = 2026
 SUITE_INFRA_EXIT_CODE = 3

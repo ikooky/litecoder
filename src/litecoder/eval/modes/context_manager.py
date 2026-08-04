@@ -29,8 +29,8 @@ from litecoder.eval.modes.base import (
 )
 
 
-_CONTEXT_BUDGET_TOKENS = 4_096
-_DIAGNOSTIC_LINE_COUNT = 360
+_CONTEXT_BUDGET_TOKENS = 8_000
+_DIAGNOSTIC_LINE_COUNT = 500
 
 
 class ContextManagerMode(EvalModePlugin):
@@ -80,10 +80,13 @@ class ContextManagerMode(EvalModePlugin):
         return ModeMeasurement(
             metrics=metrics,
             evidence={
-                "source": "production-runtime-context-ab",
+                "source": "production-runtime-context-compaction",
                 "candidate": candidate,
                 "context_compaction_enabled": numeric_metric(
                     execution.metrics, "context_compaction_enabled"
+                ),
+                "context_budget_tokens": (
+                    _CONTEXT_BUDGET_TOKENS if candidate == "treatment" else None
                 ),
                 "context_compaction_count": numeric_metric(
                     execution.metrics, "context_compaction_count"
@@ -172,14 +175,22 @@ class ContextManagerMode(EvalModePlugin):
     ) -> Mapping[str, object]:
         """Handle the case evidence operation."""
         return {
-            "source": "paired-production-runtime-context-ab",
+            "source": "paired-production-runtime-context-compaction",
             "same_setup_prompt": True,
             "same_continuation_prompt": True,
             "context_budget_tokens": _CONTEXT_BUDGET_TOKENS,
+            "control_context_budget_tokens": None,
+            "treatment_context_budget_tokens": _CONTEXT_BUDGET_TOKENS,
             "candidates": {
                 name: {
                     "status": candidate.status,
                     "validation_passed": candidate.validation.passed,
+                    "context_compaction_enabled": numeric_metric(
+                        candidate.metrics, "context_compaction_enabled"
+                    ),
+                    "context_budget_tokens": (
+                        _CONTEXT_BUDGET_TOKENS if name == "treatment" else None
+                    ),
                     "continuation_first_request_input_tokens": numeric_metric(
                         candidate.metrics,
                         "continuation_first_request_input_tokens",

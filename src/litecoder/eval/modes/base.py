@@ -56,6 +56,15 @@ class EvalModePlugin(ABC):
         """Return candidate implementations for evaluation."""
         return (ExecutionCandidate("primary", spec.prompt()),)
 
+    def prepare_candidate(
+        self,
+        spec: CaseSpec,
+        paths: CasePaths,
+        candidate: ExecutionCandidate,
+    ) -> None:
+        """Prepare candidate-local fixtures before runtime execution."""
+        del spec, paths, candidate
+
     def summary_candidate(self, candidates: Mapping[str, CandidateReport]) -> str:
         """Return the candidate used for summary reporting."""
         if "primary" in candidates:

@@ -626,11 +626,12 @@ def _permission_prompt_for(mode: str) -> Callable[[object], PromptChoice]:
 
 
 def _allow_memory_eval_permission(prompt: object) -> PromptChoice:
-    if (
-        isinstance(prompt, PermissionPrompt)
-        and prompt.tool_name == "memory_update"
-        and prompt.risk == "workspace"
-    ):
+    if isinstance(prompt, PermissionPrompt) and prompt.tool_name in {
+        "memory_list",
+        "memory_read",
+        "memory_update",
+        "memory_delete",
+    } and prompt.risk in {"safe", "workspace"}:
         return PromptChoice.ALLOW_ONCE
     return _allow_eval_permission(prompt)
 

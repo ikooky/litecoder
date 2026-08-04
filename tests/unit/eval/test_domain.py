@@ -59,6 +59,17 @@ def test_eval_modes_use_production_runtime_budgets(mode: str) -> None:
     assert policy.max_tokens is None
 
 
+def test_memory_mode_keeps_full_memory_tool_surface() -> None:
+    policy = policy_for_mode("memory")
+
+    assert {
+        "memory_list",
+        "memory_read",
+        "memory_update",
+        "memory_delete",
+    } <= policy.allowed_tools
+
+
 def test_all_five_modes_are_registered() -> None:
     names = (
         "agent-benchmark",

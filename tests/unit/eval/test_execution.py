@@ -17,6 +17,7 @@ from litecoder.eval.domain import (
 from litecoder.eval.execution import (
     RuntimeCaseExecutor,
     _allow_eval_permission,
+    _allow_memory_eval_permission,
     _copy_trace,
     _execution_failure,
     _memory_prompt_metrics,
@@ -110,6 +111,18 @@ def test_eval_permissions_only_allow_solution_and_test_runners(tmp_path: Path) -
     assert _allow_eval_permission(
         _prompt("write_file", "workspace", {"path": "tests/test_solution.py"}, tmp_path)
     ) is PromptChoice.DENY
+
+
+def test_memory_eval_permissions_allow_all_memory_tools(tmp_path: Path) -> None:
+    for tool, risk in (
+        ("memory_list", "safe"),
+        ("memory_read", "safe"),
+        ("memory_update", "workspace"),
+        ("memory_delete", "workspace"),
+    ):
+        assert _allow_memory_eval_permission(
+            _prompt(tool, risk, {}, tmp_path)
+        ) is PromptChoice.ALLOW_ONCE
     assert _allow_eval_permission(
         _prompt(
             "run_shell",

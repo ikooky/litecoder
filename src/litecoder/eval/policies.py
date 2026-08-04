@@ -16,13 +16,22 @@ BASE_EVAL_TOOLS = frozenset(
     }
 )
 
+MEMORY_EVAL_TOOLS = frozenset(
+    {
+        "memory_list",
+        "memory_read",
+        "memory_update",
+        "memory_delete",
+    }
+)
+
 
 def policy_for_mode(mode: str) -> ExecutionPolicy:
     """Handle the policy for mode operation."""
     selected = EvalMode(validate_mode(mode))
     if selected is EvalMode.MEMORY:
         return ExecutionPolicy(
-            BASE_EVAL_TOOLS | {"memory_update"},
+            BASE_EVAL_TOOLS | MEMORY_EVAL_TOOLS,
             max_rounds=None,
             max_tokens=None,
         )
