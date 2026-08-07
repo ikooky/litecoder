@@ -37,7 +37,6 @@ from litecoder.tools.memory import (
 from litecoder.tools.skills import LoadSkillTool
 from litecoder.tools.tasks import (
     TaskCancelTool,
-    TaskClaimTool,
     TaskCompleteTool,
     TaskCreateTool,
     TaskFailTool,
@@ -72,7 +71,6 @@ from litecoder.tools.tasks import (
         (TaskCreateTool.spec, ("Lead-only", "TodoWrite")),
         (TaskListTool.spec, ("dependencies", "single-agent")),
         (TaskGetTool.spec, ("latest state", "ownership")),
-        (TaskClaimTool.spec, ("before", "mutation")),
         (TaskCompleteTool.spec, ("validation", "unresolved")),
         (TaskFailTool.spec, ("blocker", "recovery")),
         (TaskCancelTool.spec, ("superseded", "teammate")),

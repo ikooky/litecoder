@@ -48,7 +48,7 @@ class FactoryDouble:
         return runtime
 
 
-class ClaimingFailureRuntime(RuntimeDouble):
+class AssignmentFailureRuntime(RuntimeDouble):
     def __init__(
         self, session_id: str, tasks: TaskManager, agent_id: str, task_id: str
     ) -> None:
@@ -59,7 +59,9 @@ class ClaimingFailureRuntime(RuntimeDouble):
 
     async def run(self, objective: str) -> AgentResult:
         del objective
-        await self.tasks.claim(self.task_id, self.agent_id)
+        task = await self.tasks.get(self.task_id)
+        assert task.status is TaskStatus.IN_PROGRESS
+        assert task.owner_agent_id == self.agent_id
         return AgentResult(
             self.session_id,
             "incomplete",
@@ -72,7 +74,7 @@ class ClaimingFailureRuntime(RuntimeDouble):
         raise AssertionError("failed worker must not resume")
 
 
-class ClaimingFailureFactory(FactoryDouble):
+class AssignmentFailureFactory(FactoryDouble):
     def __init__(self, tasks: TaskManager) -> None:
         super().__init__()
         self.tasks = tasks
@@ -81,7 +83,7 @@ class ClaimingFailureFactory(FactoryDouble):
         assert request.agent_id is not None
         assert request.task_id is not None
         self.calls.append(request)
-        runtime = ClaimingFailureRuntime(
+        runtime = AssignmentFailureRuntime(
             "failing-worker-session",
             self.tasks,
             request.agent_id,
@@ -97,7 +99,6 @@ def authority() -> ChildAuthority:
             {
                 "read_file",
                 "search_text",
-                "task_claim",
                 "task_complete",
                 "task_fail",
                 "team_send",
@@ -133,8 +134,29 @@ def build_executor(*tools):
     )
 
 
-def create_call(call_id: str, display_name: str = "reviewer") -> ToolCall:
-    return ToolCall(call_id, "team_create", {"display_name": display_name, "objective": "inspect", "tools": ["read_file", "task_claim", "task_complete", "task_fail", "team_send"], "budget": {"max_rounds": 2, "max_tool_calls": 4}, "task_id": "task-1"})
+def create_call(
+    call_id: str,
+    display_name: str = "reviewer",
+    *,
+    task_id: str | None = None,
+) -> ToolCall:
+    arguments: dict[str, object] = {
+        "display_name": display_name,
+        "objective": "inspect",
+        "tools": ["read_file", "task_complete", "task_fail", "team_send"],
+        "budget": {"max_rounds": 2, "max_tool_calls": 4},
+    }
+    if task_id is not None:
+        arguments["task_id"] = task_id
+    return ToolCall(call_id, "team_create", arguments)
+
+
+async def create_member(manager: TeamManager, display_name: str):
+    return await manager.create_teammate(
+        ChildAgentRequest("inspect", authority(), f"create-{display_name}"),
+        caller=caller(),
+        display_name=display_name,
+    )
 
 
 def test_team_send_schema_documents_lead_recipient() -> None:
@@ -145,11 +167,11 @@ def test_team_send_schema_documents_lead_recipient() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_team_worker_marks_claimed_task_failed(tmp_path: Path) -> None:
+async def test_failed_team_worker_updates_assigned_task(tmp_path: Path) -> None:
     tasks = TaskManager(TaskStore(tmp_path / "tasks"))
     await tasks.create(TaskCreate("task-1", "work", "perform delegated work"))
     manager = TeamManager(
-        ClaimingFailureFactory(tasks),
+        AssignmentFailureFactory(tasks),
         task_manager=tasks,
         id_factory=lambda: "worker-1",
     )
@@ -178,29 +200,53 @@ async def test_failed_team_worker_marks_claimed_task_failed(tmp_path: Path) -> N
 async def test_team_executor_does_not_dedupe_identical_sends(tmp_path: Path) -> None:
     bus = MessageBus(tmp_path / "mailboxes")
     manager = TeamManager(FactoryDouble(), message_bus=bus)
+    create = TeamCreateTool(manager, caller_resolver=lambda _: caller())
     send = TeamSendTool(manager)
     executor = build_executor(send)
-    arguments = {"agent_id": "agent-1", "body": "same"}
+    member = await create.execute(create_call("create-1"), context(tmp_path))
+    agent_id = member.metadata["agent_id"]
+    arguments = {"agent_id": agent_id, "body": "same"}
 
-    first = await executor.execute(ToolCall("send-1", "team_send", arguments), context(tmp_path))
-    second = await executor.execute(ToolCall("send-2", "team_send", arguments), context(tmp_path))
+    first = await executor.execute(
+        ToolCall("send-1", "team_send", arguments),
+        context(tmp_path, agent_id="lead"),
+    )
+    second = await executor.execute(
+        ToolCall("send-2", "team_send", arguments),
+        context(tmp_path, agent_id="lead"),
+    )
 
     assert first.status == second.status == "success"
-    assert [message.body for message in await bus.receive("agent-1")] == ["same", "same"]
+    assert [message.body for message in await bus.receive(agent_id)] == ["same", "same"]
 
 
 @pytest.mark.asyncio
 async def test_team_executor_receive_can_run_again_after_new_message(tmp_path: Path) -> None:
     bus = MessageBus(tmp_path / "mailboxes")
     manager = TeamManager(FactoryDouble(), message_bus=bus)
+    create = TeamCreateTool(manager, caller_resolver=lambda _: caller())
     send = TeamSendTool(manager)
     receive = TeamReceiveTool(manager)
     executor = build_executor(send, receive)
+    member = await create.execute(create_call("create-1"), context(tmp_path))
+    agent_id = member.metadata["agent_id"]
 
-    await executor.execute(ToolCall("send-1", "team_send", {"agent_id": "lead-session", "body": "one"}), context(tmp_path))
-    first = await executor.execute(ToolCall("receive-1", "team_receive", {}), context(tmp_path, agent_id="lead-session"))
-    await executor.execute(ToolCall("send-2", "team_send", {"agent_id": "lead-session", "body": "two"}), context(tmp_path))
-    second = await executor.execute(ToolCall("receive-2", "team_receive", {}), context(tmp_path, agent_id="lead-session"))
+    await executor.execute(
+        ToolCall("send-1", "team_send", {"agent_id": "lead", "body": "one"}),
+        context(tmp_path, agent_id=agent_id),
+    )
+    first = await executor.execute(
+        ToolCall("receive-1", "team_receive", {}),
+        context(tmp_path, agent_id="lead"),
+    )
+    await executor.execute(
+        ToolCall("send-2", "team_send", {"agent_id": "lead", "body": "two"}),
+        context(tmp_path, agent_id=agent_id),
+    )
+    second = await executor.execute(
+        ToolCall("receive-2", "team_receive", {}),
+        context(tmp_path, agent_id="lead"),
+    )
 
     assert json.loads(first.content)[0]["body"] == "one"
     assert json.loads(second.content)[0]["body"] == "two"
@@ -251,7 +297,10 @@ async def test_create_send_receive_binds_session_to_generated_agent_id(tmp_path:
     created = await create_executor.execute(create_call("create-1"), context(tmp_path))
     agent_id = created.metadata["agent_id"]
     member = manager.list()[0]
-    sent = await send.execute(ToolCall("send-1", "team_send", {"agent_id": "reviewer", "body": "hello"}), context(tmp_path))
+    sent = await send.execute(
+        ToolCall("send-1", "team_send", {"agent_id": "reviewer", "body": "hello"}),
+        context(tmp_path, agent_id="lead"),
+    )
 
     received = await receive.execute(ToolCall("receive-1", "team_receive", {}), context(tmp_path, session_id=member.session_id))
 
@@ -266,7 +315,9 @@ async def test_create_send_receive_binds_session_to_generated_agent_id(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_team_create_does_not_claim_the_delegated_task(tmp_path: Path) -> None:
+async def test_team_create_assigns_the_delegated_task_before_worker_start(
+    tmp_path: Path,
+) -> None:
     tasks = TaskManager(TaskStore(tmp_path / "tasks"))
     await tasks.create(TaskCreate("task-1", "Inspect", "Inspect the solution"))
     manager = TeamManager(FactoryDouble(), id_factory=lambda: "worker-1")
@@ -276,12 +327,14 @@ async def test_team_create_does_not_claim_the_delegated_task(tmp_path: Path) -> 
         task_manager=tasks,
     )
 
-    created = await create.execute(create_call("create-1"), context(tmp_path))
+    created = await create.execute(
+        create_call("create-1", task_id="task-1"), context(tmp_path)
+    )
     task = await tasks.get("task-1")
 
     assert created.metadata["agent_id"] == "worker-1"
-    assert task.status.value == "pending"
-    assert task.owner_agent_id is None
+    assert task.status.value == "in_progress"
+    assert task.owner_agent_id == "worker-1"
 
 
 @pytest.mark.asyncio
@@ -338,8 +391,8 @@ async def test_worktree_binding_returns_binding_and_rejects_lead_owned_task(
 
     assert resolved is binding
 
-    await tasks.claim("task-1", "lead")
-    with pytest.raises(ToolFailure, match="pending and unowned"):
+    await tasks.assign_and_start("task-1", "lead")
+    with pytest.raises(ToolFailure, match="pending and unassigned"):
         await _worktree_binding(Worktrees(), "worktree-1", "task-1", tasks)
 
 
@@ -362,6 +415,33 @@ async def test_team_send_rejects_ambiguous_display_name(tmp_path: Path) -> None:
                 {"agent_id": "reviewer", "body": "hello"},
             ),
             context(tmp_path),
+        )
+
+
+@pytest.mark.asyncio
+async def test_team_mailbox_rejects_non_members(tmp_path: Path) -> None:
+    bus = MessageBus(tmp_path / "mailboxes")
+    manager = TeamManager(FactoryDouble(), message_bus=bus)
+    create = TeamCreateTool(manager, caller_resolver=lambda _: caller())
+    send = TeamSendTool(manager)
+    receive = TeamReceiveTool(manager)
+    created = await create.execute(create_call("create-1"), context(tmp_path))
+    member_id = created.metadata["agent_id"]
+
+    with pytest.raises(ToolFailure, match="mailbox access"):
+        await send.execute(
+            ToolCall("unknown-recipient", "team_send", {"agent_id": "outside", "body": "hello"}),
+            context(tmp_path, agent_id="lead"),
+        )
+    with pytest.raises(ToolFailure, match="mailbox access"):
+        await send.execute(
+            ToolCall("unknown-sender", "team_send", {"agent_id": member_id, "body": "hello"}),
+            context(tmp_path, agent_id="outside"),
+        )
+    with pytest.raises(ToolFailure, match="mailbox access"):
+        await receive.execute(
+            ToolCall("unknown-receive", "team_receive", {}),
+            context(tmp_path, agent_id="outside"),
         )
 
 
@@ -393,11 +473,19 @@ async def test_team_tool_contracts_and_registration(tmp_path: Path) -> None:
     denied = TeamCreateTool(manager, caller_resolver=lambda _: caller("child"))
     with pytest.raises(ToolDenied, match="only user or lead"):
         await denied.execute(create_call("denied"), context(tmp_path, session_id="child-session"))
-    sent = await registry.require("team_send").execute(ToolCall("send", "team_send", {"agent_id": "agent-1", "body": "hello"}), context(tmp_path, agent_id="explicit-sender"))
+    created = await create.execute(create_call("create-member"), context(tmp_path))
+    member_id = created.metadata["agent_id"]
+    sent = await registry.require("team_send").execute(
+        ToolCall("send", "team_send", {"agent_id": member_id, "body": "hello"}),
+        context(tmp_path, agent_id="lead"),
+    )
     assert sent.status == "success"
-    received = await registry.require("team_receive").execute(ToolCall("receive", "team_receive", {}), context(tmp_path, agent_id="agent-1"))
+    received = await registry.require("team_receive").execute(
+        ToolCall("receive", "team_receive", {}),
+        context(tmp_path, agent_id=member_id),
+    )
     assert json.loads(received.content)[0]["body"] == "hello"
-    assert json.loads(received.content)[0]["sender"] == "explicit-sender"
+    assert json.loads(received.content)[0]["sender"] == "lead"
     listed = await registry.require("team_list").execute(ToolCall("list", "team_list", {}), context(tmp_path))
     assert isinstance(json.loads(listed.content), list)
 
@@ -435,18 +523,23 @@ async def test_registration_binds_explicit_bus_to_protocol_notifications(
     register_team_tools(
         registry, manager, bus=bus, caller_resolver=lambda _: caller()
     )
+    worker = await create_member(manager, "worker")
 
     requested = await registry.require("team_request_shutdown").execute(
-        ToolCall("request", "team_request_shutdown", {"agent_id": "worker"}),
-        context(tmp_path, agent_id="lead-agent"),
+        ToolCall(
+            "request",
+            "team_request_shutdown",
+            {"agent_id": worker.agent_id},
+        ),
+        context(tmp_path, agent_id="lead"),
     )
-    messages = await bus.receive("worker")
+    messages = await bus.receive(worker.agent_id)
     request = manager.protocols.pending_requests[requested.metadata["request_id"]]
 
     assert manager.message_bus is bus
     assert manager.protocols.message_bus is bus
     assert len(messages) == 1
-    assert messages[0].sender == "lead-agent"
+    assert messages[0].sender == "lead"
     assert json.loads(messages[0].body)["phase"] == "request"
     request.future.cancel()
     await asyncio.sleep(0)
@@ -548,14 +641,16 @@ async def test_protocol_tools_correlate_requester_and_exact_responder(
     manager = TeamManager(FactoryDouble(), message_bus=bus)
     registry = ToolRegistry()
     register_team_tools(registry, manager, caller_resolver=lambda _: caller())
+    reviewer = await create_member(manager, "reviewer")
+    other = await create_member(manager, "other")
 
     requested = await registry.require("team_request_plan_approval").execute(
         ToolCall(
             "request-plan",
             "team_request_plan_approval",
-            {"agent_id": "reviewer", "plan": {"tasks": ["t1"]}},
+            {"agent_id": reviewer.agent_id, "plan": {"tasks": ["t1"]}},
         ),
-        context(tmp_path, agent_id="lead-agent"),
+        context(tmp_path, agent_id="lead"),
     )
     request_id = requested.metadata["request_id"]
     pending = manager.protocols.pending_requests[request_id]
@@ -567,7 +662,7 @@ async def test_protocol_tools_correlate_requester_and_exact_responder(
                 "team_respond_plan_approval",
                 {"request_id": request_id, "approved": True},
             ),
-            context(tmp_path, agent_id="other-agent"),
+            context(tmp_path, agent_id=other.agent_id),
         )
 
     responded = await registry.require("team_respond_plan_approval").execute(
@@ -576,7 +671,7 @@ async def test_protocol_tools_correlate_requester_and_exact_responder(
             "team_respond_plan_approval",
             {"request_id": request_id, "approved": False, "reason": "revise"},
         ),
-        context(tmp_path, agent_id="reviewer"),
+        context(tmp_path, agent_id=reviewer.agent_id),
     )
 
     assert responded.status == "success"
@@ -593,14 +688,15 @@ async def test_shutdown_tools_use_the_shutdown_protocol_kind(
     )
     registry = ToolRegistry()
     register_team_tools(registry, manager, caller_resolver=lambda _: caller())
+    worker = await create_member(manager, "worker")
 
     requested = await registry.require("team_request_shutdown").execute(
         ToolCall(
             "request-shutdown",
             "team_request_shutdown",
-            {"agent_id": "worker", "reason": "maintenance"},
+            {"agent_id": worker.agent_id, "reason": "maintenance"},
         ),
-        context(tmp_path, agent_id="lead-agent"),
+        context(tmp_path, agent_id="lead"),
     )
     request_id = requested.metadata["request_id"]
     pending = manager.protocols.pending_requests[request_id]
@@ -610,7 +706,7 @@ async def test_shutdown_tools_use_the_shutdown_protocol_kind(
             "team_respond_shutdown",
             {"request_id": request_id, "approved": True},
         ),
-        context(tmp_path, agent_id="worker"),
+        context(tmp_path, agent_id=worker.agent_id),
     )
 
     assert pending.kind == "shutdown"
@@ -656,9 +752,14 @@ async def test_response_tool_reports_notification_failure_and_allows_retry(
     manager = TeamManager(FactoryDouble(), message_bus=bus)
     registry = ToolRegistry()
     register_team_tools(registry, manager, caller_resolver=lambda _: caller())
+    worker = await create_member(manager, "worker")
     requested = await registry.require("team_request_shutdown").execute(
-        ToolCall("request", "team_request_shutdown", {"agent_id": "worker"}),
-        context(tmp_path, agent_id="lead-agent"),
+        ToolCall(
+            "request",
+            "team_request_shutdown",
+            {"agent_id": worker.agent_id},
+        ),
+        context(tmp_path, agent_id="lead"),
     )
     request_id = requested.metadata["request_id"]
     request = manager.protocols.pending_requests[request_id]
@@ -671,7 +772,7 @@ async def test_response_tool_reports_notification_failure_and_allows_retry(
                 "team_respond_shutdown",
                 {"request_id": request_id, "approved": True},
             ),
-            context(tmp_path, agent_id="worker"),
+            context(tmp_path, agent_id=worker.agent_id),
         )
 
     assert manager.protocols.pending_requests == {request_id: request}
@@ -682,7 +783,7 @@ async def test_response_tool_reports_notification_failure_and_allows_retry(
             "team_respond_shutdown",
             {"request_id": request_id, "approved": True},
         ),
-        context(tmp_path, agent_id="worker"),
+        context(tmp_path, agent_id=worker.agent_id),
     )
     assert result.status == "success"
     assert (await request).approved is True
@@ -696,9 +797,14 @@ async def test_response_tool_cancellation_leaves_request_retryable(
     manager = TeamManager(FactoryDouble(), message_bus=bus)
     registry = ToolRegistry()
     register_team_tools(registry, manager, caller_resolver=lambda _: caller())
+    worker = await create_member(manager, "worker")
     requested = await registry.require("team_request_shutdown").execute(
-        ToolCall("request", "team_request_shutdown", {"agent_id": "worker"}),
-        context(tmp_path, agent_id="lead-agent"),
+        ToolCall(
+            "request",
+            "team_request_shutdown",
+            {"agent_id": worker.agent_id},
+        ),
+        context(tmp_path, agent_id="lead"),
     )
     request_id = requested.metadata["request_id"]
     request = manager.protocols.pending_requests[request_id]
@@ -710,7 +816,7 @@ async def test_response_tool_cancellation_leaves_request_retryable(
                 "team_respond_shutdown",
                 {"request_id": request_id, "approved": True},
             ),
-            context(tmp_path, agent_id="worker"),
+            context(tmp_path, agent_id=worker.agent_id),
         )
     )
     await bus.response_started.wait()
@@ -728,7 +834,7 @@ async def test_response_tool_cancellation_leaves_request_retryable(
             "team_respond_shutdown",
             {"request_id": request_id, "approved": True},
         ),
-        context(tmp_path, agent_id="worker"),
+        context(tmp_path, agent_id=worker.agent_id),
     )
     assert (await request).approved is True
 
@@ -742,6 +848,7 @@ async def test_protocol_tools_reject_non_finite_timeout(
     manager = TeamManager(FactoryDouble(), message_bus=bus)
     registry = ToolRegistry()
     register_team_tools(registry, manager, caller_resolver=lambda _: caller())
+    worker = await create_member(manager, "worker")
 
     try:
         with pytest.raises(ToolFailure, match="timeout"):
@@ -750,12 +857,12 @@ async def test_protocol_tools_reject_non_finite_timeout(
                 (),
                 {
                     "id": "request",
-                    "arguments": {"agent_id": "worker", "timeout": timeout},
+                    "arguments": {"agent_id": worker.agent_id, "timeout": timeout},
                 },
             )()
             await registry.require("team_request_shutdown").execute(
                 raw_call,
-                context(tmp_path, agent_id="lead-agent"),
+                context(tmp_path, agent_id="lead"),
             )
     finally:
         for request in tuple(manager.protocols.pending_requests.values()):
@@ -770,13 +877,14 @@ async def test_tool_created_timeout_exception_is_observed_and_awaitable(
     manager = TeamManager(FactoryDouble(), message_bus=bus)
     registry = ToolRegistry()
     register_team_tools(registry, manager, caller_resolver=lambda _: caller())
+    worker = await create_member(manager, "worker")
     requested = await registry.require("team_request_shutdown").execute(
         ToolCall(
             "request-timeout",
             "team_request_shutdown",
-            {"agent_id": "worker", "timeout": 0.01},
+            {"agent_id": worker.agent_id, "timeout": 0.01},
         ),
-        context(tmp_path, agent_id="lead-agent"),
+        context(tmp_path, agent_id="lead"),
     )
     request = manager.protocols.pending_requests[requested.metadata["request_id"]]
 

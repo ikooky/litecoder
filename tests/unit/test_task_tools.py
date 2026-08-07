@@ -10,7 +10,6 @@ from litecoder.tasks.store import TaskStore
 from litecoder.tools.models import ToolCall, ToolContext, ToolDenied, ToolFailure
 from litecoder.tools.tasks import (
     TaskCancelTool,
-    TaskClaimTool,
     TaskCompleteTool,
     TaskCreateTool,
     TaskFailTool,
@@ -59,7 +58,7 @@ async def test_task_manager_lists_dependency_order_and_get_reads_persisted_task(
 
 
 @pytest.mark.asyncio
-async def test_task_tools_use_context_agent_id_for_claim_and_owned_transitions(
+async def test_task_tools_use_context_agent_id_for_owned_transitions(
     tmp_path: Path, manager: TaskManager
 ) -> None:
     lead = _context(tmp_path, "lead")
@@ -69,7 +68,6 @@ async def test_task_tools_use_context_agent_id_for_claim_and_owned_transitions(
     create = TaskCreateTool(manager)
     listing = TaskListTool(manager)
     get = TaskGetTool(manager)
-    claim = TaskClaimTool(manager)
     complete = TaskCompleteTool(manager)
     fail = TaskFailTool(manager)
     cancel = TaskCancelTool(manager)
@@ -83,10 +81,8 @@ async def test_task_tools_use_context_agent_id_for_claim_and_owned_transitions(
         ToolCall("get", "task_get", {"id": "complete-me"}), worker
     )).metadata["task"]["id"] == "complete-me"
 
-    claimed = await claim.execute(
-        ToolCall("claim", "task_claim", {"id": "complete-me"}), worker
-    )
-    assert claimed.metadata["task"]["owner_agent_id"] == "worker-1"
+    assigned = await manager.assign_and_start("complete-me", "worker-1")
+    assert assigned.owner_agent_id == "worker-1"
     with pytest.raises(ToolFailure, match="not owned"):
         await complete.execute(
             ToolCall("complete-wrong", "task_complete", {"id": "complete-me"}),
@@ -97,13 +93,13 @@ async def test_task_tools_use_context_agent_id_for_claim_and_owned_transitions(
     )).metadata["task"]["status"] == TaskStatus.COMPLETED.value
 
     await create.execute(_create_call("create-2", "fail-me"), lead)
-    await claim.execute(ToolCall("claim-2", "task_claim", {"id": "fail-me"}), worker)
+    await manager.assign_and_start("fail-me", "worker-1")
     assert (await fail.execute(
         ToolCall("fail", "task_fail", {"id": "fail-me"}), worker
     )).metadata["task"]["status"] == TaskStatus.FAILED.value
 
     await create.execute(_create_call("create-3", "cancel-me"), lead)
-    await claim.execute(ToolCall("claim-3", "task_claim", {"id": "cancel-me"}), worker)
+    await manager.assign_and_start("cancel-me", "worker-1")
     with pytest.raises(ToolFailure, match="not owned"):
         await cancel.execute(
             ToolCall("cancel-wrong", "task_cancel", {"id": "cancel-me"}), intruder
@@ -153,15 +149,14 @@ async def test_task_get_rejects_a_task_outside_the_delegated_set(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tool_type", [
-    TaskClaimTool, TaskCompleteTool, TaskFailTool, TaskCancelTool,
+    TaskCompleteTool, TaskFailTool, TaskCancelTool,
 ])
 async def test_task_mutations_reject_tasks_outside_delegated_set(
     tmp_path: Path, manager: TaskManager, tool_type: type[object]
 ) -> None:
     await manager.create(TaskCreate("outside", "Outside", "not delegated"))
     context = _context(tmp_path, "worker-1", task_ids=["delegated"])
-    if tool_type is not TaskClaimTool:
-        await manager.claim("outside", "worker-1")
+    await manager.assign_and_start("outside", "worker-1")
 
     with pytest.raises(ToolDenied, match="delegated"):
         await tool_type(manager).execute(  # type: ignore[operator]

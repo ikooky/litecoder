@@ -169,10 +169,10 @@ async def test_resume_waits_for_in_progress_startup_recovery(
     turn_task_manager = TaskManager(task_store)
     entered = asyncio.Event()
 
-    class ClaimingLoop:
+    class AssignmentLoop:
         async def run_turn(self, session_id: str, prompt: str) -> AgentResult:
-            claimed = await turn_task_manager.claim("work", "agent-a")
-            assert claimed.status is TaskStatus.IN_PROGRESS
+            assigned = await turn_task_manager.assign_and_start("work", "agent-a")
+            assert assigned.status is TaskStatus.IN_PROGRESS
             entered.set()
             await turn_store.mark_status(session_id, SessionStatus.IDLE)
             return AgentResult(session_id, "completed", "done", Usage(0, 0))
@@ -182,7 +182,7 @@ async def test_resume_waits_for_in_progress_startup_recovery(
         paths=paths,
         provider_name="fake",
         model="model",
-        loop_factory=lambda *_args: ClaimingLoop(),
+        loop_factory=lambda *_args: AssignmentLoop(),
         startup_lock=NamedFileLock.startup(paths.project_id, paths.user_dir),
         session_lock_factory=lambda root_id: NamedFileLock.session_tree(
             root_id, paths.user_dir

@@ -191,11 +191,30 @@ class ChildAgentHandle:
 class SubagentManager:
     """Manager coordinating the subagent manager."""
     def __init__(
-        self, factory: AgentRuntimeFactory, *, hooks: HookManager | None = None
+        self,
+        factory: AgentRuntimeFactory,
+        *,
+        hooks: HookManager | None = None,
+        task_manager: TaskManager | None = None,
     ) -> None:
         self.factory = factory
         self.hooks = hooks
+        self.task_manager = task_manager
         self.spawn_history: list[dict[str, object]] = []
+
+    def bind_task_manager(
+        self, task_manager: TaskManager | None = None
+    ) -> TaskManager | None:
+        """Bind the durable task manager used for delegated execution."""
+        if (
+            self.task_manager is not None
+            and task_manager is not None
+            and self.task_manager is not task_manager
+        ):
+            raise ValueError("conflicting TaskManager instances")
+        if self.task_manager is None:
+            self.task_manager = task_manager
+        return self.task_manager
 
     async def spawn(
         self,
@@ -228,9 +247,25 @@ class SubagentManager:
             if outcome.blocked:
                 raise AgentCreationDenied("subagent creation was blocked by a hook")
         runtime = await self.factory.create_child(restricted)
-        agent_id = getattr(runtime, "agent_id", None)
+        agent_id = _runtime_agent_id(runtime, restricted)
+        task_manager = self.task_manager or getattr(runtime, "task_manager", None)
+        if restricted.task_id is not None:
+            if task_manager is None:
+                close = getattr(runtime, "close", None)
+                if callable(close):
+                    await close()
+                raise AgentCreationDenied("delegated task manager is unavailable")
+            try:
+                await task_manager.assign_and_start(restricted.task_id, agent_id)
+            except (TaskManagerError, ValueError) as error:
+                close = getattr(runtime, "close", None)
+                if callable(close):
+                    await close()
+                raise AgentCreationDenied(
+                    "delegated task could not be assigned"
+                ) from error
         child_evidence: dict[str, object] = {
-            "agent_id": agent_id if isinstance(agent_id, str) else "",
+            "agent_id": agent_id,
             "task_id": restricted.task_id or "",
             "worktree_id": restricted.worktree_id or "",
             "status": "running",
@@ -265,9 +300,9 @@ class SubagentManager:
             raise
         finally:
             await _fail_unfinished_delegated_task(
-                runtime,
+                task_manager,
                 restricted.task_id,
-                agent_id if isinstance(agent_id, str) else "",
+                agent_id,
             )
             try:
                 if self.hooks is not None:
@@ -282,11 +317,10 @@ class SubagentManager:
 
 
 async def _fail_unfinished_delegated_task(
-    runtime: object,
+    manager: object | None,
     task_id: str | None,
     agent_id: str,
 ) -> None:
-    manager = getattr(runtime, "task_manager", None)
     if manager is None or not task_id or not agent_id:
         return
     try:
@@ -298,6 +332,18 @@ async def _fail_unfinished_delegated_task(
             await manager.fail(task_id, agent_id)
     except Exception:
         return
+
+
+def _runtime_agent_id(runtime: object, request: ChildAgentRequest) -> str:
+    """Resolve the durable execution identity before the first child turn."""
+    for value in (
+        getattr(runtime, "agent_id", None),
+        request.agent_id,
+        getattr(runtime, "session_id", None),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value
+    raise AgentCreationDenied("child runtime did not provide an agent id")
 
 
 async def _agent_result_to_tool_result(

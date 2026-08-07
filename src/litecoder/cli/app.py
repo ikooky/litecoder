@@ -401,7 +401,11 @@ async def build_runtime(
             parent_session_resolver=lambda: runtime.active_session_id,
             lease_resolver=lambda: runtime.active_root_turn_lease,
         )
-        subagent_manager = SubagentManager(runtime_factory, hooks=hooks)
+        subagent_manager = SubagentManager(
+            runtime_factory,
+            hooks=hooks,
+            task_manager=task_manager,
+        )
         team_manager = TeamManager(
             runtime_factory,
             message_bus=message_bus,

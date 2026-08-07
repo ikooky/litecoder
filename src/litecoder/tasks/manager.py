@@ -54,10 +54,10 @@ class InvalidTaskTransition(TaskManagerError):
         self.target = target
 
 
-class TaskNotClaimable(TaskManagerError):
-    """Component responsible for the task not claimable."""
+class TaskNotAssignable(TaskManagerError):
+    """Raised when a task cannot be assigned to an execution agent."""
     def __init__(self, task_id: str) -> None:
-        super().__init__(f"task {task_id!r} is not claimable")
+        super().__init__(f"task {task_id!r} is not assignable")
         self.task_id = task_id
 
 
@@ -160,16 +160,21 @@ class TaskManager:
             self.store.write(task)
             return task
 
-    async def claim(self, task_id: str, agent_id: str) -> TaskRecord:
-        """Claim a pending task for an agent."""
+    async def assign_and_start(self, task_id: str, agent_id: str) -> TaskRecord:
+        """Atomically assign a runnable task and mark its execution started."""
         agent_id = _validate_agent_id(agent_id)
         async with self._locked():
             records, task = self._load(task_id)
             if (
+                task.status is TaskStatus.IN_PROGRESS
+                and task.owner_agent_id == agent_id
+            ):
+                return task
+            if (
                 task.status is not TaskStatus.PENDING
                 or task.owner_agent_id is not None
             ):
-                raise TaskNotClaimable(task_id)
+                raise TaskNotAssignable(task_id)
             self._ensure_unblocked(task, records)
             task.owner_agent_id = agent_id
             task.status = TaskStatus.IN_PROGRESS
@@ -248,7 +253,7 @@ class TaskManager:
                 TaskStatus.COMPLETED,
                 TaskStatus.CANCELLED,
             }:
-                raise TaskNotClaimable(task_id)
+                raise TaskNotAssignable(task_id)
             task.owner_agent_id = agent_id
             self.store.write(task)
             return task

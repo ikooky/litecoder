@@ -105,9 +105,8 @@ class _ChildExecutor:
             )
         status = getattr(task.status, "value", task.status)
         if task.owner_agent_id != self.agent_id or status != "in_progress":
-            return "task_not_claimed", (
-                f"Claim delegated task {self.task_id!r} with task_claim before "
-                "mutating its workspace"
+            return "task_not_assigned", (
+                f"Delegated task {self.task_id!r} is not active for this agent"
             )
         return None
 

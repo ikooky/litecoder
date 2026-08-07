@@ -360,10 +360,10 @@ async def _stage_task_recovery(
             dependencies=("eval-edit",),
         )
     )
-    await manager.claim("eval-edit", "eval-agent")
+    await manager.assign_and_start("eval-edit", "eval-agent")
     solution = workspace / "solution.py"
     return {
-        "interruption_checkpoint": "after-task-claim-before-agent-turn",
+        "interruption_checkpoint": "after-task-assignment-before-agent-turn",
         "checkpoint_artifact_sha256": _file_sha256(solution),
         "runtime_restart_count": 1,
     }
@@ -410,7 +410,7 @@ async def _finish_task_recovery(
         raise RuntimeError("task-state evaluation requires TaskManager")
     if getattr(result, "status", None) == "completed":
         await manager.complete("eval-edit", "eval-agent")
-        await manager.claim("eval-validate", "eval-agent")
+        await manager.assign_and_start("eval-validate", "eval-agent")
         await manager.complete("eval-validate", "eval-agent")
     tasks = await manager.list()
     by_id = {getattr(task, "id", ""): task for task in tasks}

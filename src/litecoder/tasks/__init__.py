@@ -7,7 +7,7 @@ from litecoder.tasks.manager import (
     TaskBlocked,
     TaskManager,
     TaskManagerError,
-    TaskNotClaimable,
+    TaskNotAssignable,
     TaskNotFound,
     TaskOwnershipError,
 )
@@ -54,7 +54,7 @@ __all__ = [
     "TaskCycleError",
     "TaskManager",
     "TaskManagerError",
-    "TaskNotClaimable",
+    "TaskNotAssignable",
     "TaskNotFound",
     "TaskOwnershipError",
     "TaskRecord",

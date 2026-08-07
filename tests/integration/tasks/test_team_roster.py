@@ -6,8 +6,11 @@ import pytest
 
 from litecoder.agent.result import AgentResult
 from litecoder.providers.models import Usage
+from litecoder.tasks.manager import TaskManager
 from litecoder.tasks.message_bus import MessageBus, TeamMessage
+from litecoder.tasks.models import TaskCreate
 from litecoder.tasks.protocols import ProtocolManager
+from litecoder.tasks.store import TaskStore
 from litecoder.tasks.subagents import (
     AgentCaller,
     AgentCreationDenied,
@@ -82,7 +85,7 @@ def authority() -> ChildAuthority:
     )
 
 
-def request() -> ChildAgentRequest:
+def request(*, task_id: str | None = None) -> ChildAgentRequest:
     return ChildAgentRequest(
         "inspect",
         ChildAuthority(
@@ -94,7 +97,7 @@ def request() -> ChildAgentRequest:
             max_tool_calls=4,
         ),
         "call-1",
-        task_id="task-1",
+        task_id=task_id,
     )
 
 
@@ -136,6 +139,17 @@ async def test_only_user_or_lead_can_create_teammate() -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_teammate_requires_a_bound_task_manager() -> None:
+    factory = FactoryDouble()
+    manager = TeamManager(factory)
+
+    with pytest.raises(AgentCreationDenied, match="task manager"):
+        await manager.create_teammate(request(task_id="task-1"), caller=caller("lead"))
+
+    assert factory.runtimes[0].runs == 0
+
+
+@pytest.mark.asyncio
 async def test_teammate_authority_is_restricted_to_creator() -> None:
     manager = TeamManager(FactoryDouble())
     too_powerful = ChildAgentRequest(
@@ -167,7 +181,8 @@ async def test_resolve_recipient_accepts_ids_sessions_and_unique_display_names()
     assert manager.resolve_recipient(member.agent_id) == member.agent_id
     assert manager.resolve_recipient(member.session_id) == member.agent_id
     assert manager.resolve_recipient("reviewer") == member.agent_id
-    assert manager.resolve_recipient("external-agent") == "external-agent"
+    with pytest.raises(ValueError, match="unavailable"):
+        manager.resolve_recipient("external-agent")
 
 
 @pytest.mark.asyncio
@@ -190,17 +205,18 @@ async def test_teammate_worker_receives_lead_route_and_resumes_mailbox(
 ) -> None:
     factory = WorkerFactoryDouble()
     bus = MessageBus(tmp_path / "mailboxes")
-    manager = TeamManager(factory, message_bus=bus)
+    tasks = TaskManager(TaskStore(tmp_path / "tasks"))
+    await tasks.create(TaskCreate("task-1", "inspect", "inspect"))
+    manager = TeamManager(factory, message_bus=bus, task_manager=tasks)
 
     member = await manager.create_teammate(
-        request(), caller=caller("lead"), display_name="reviewer"
+        request(task_id="task-1"), caller=caller("lead"), display_name="reviewer"
     )
     await asyncio.wait_for(factory.runtime.run_called.wait(), timeout=1)
 
     initial = factory.runtime.run_objectives[0]
     assert f'Your teammate agent ID is "{member.agent_id}"' in initial
-    assert 'explicitly call task_claim' in initial
-    assert 'runtime will not claim it for you' in initial
+    assert 'The runtime assigned it to you before this turn' in initial
     assert 'team lead inbox ID is "lead"' in initial
     assert 'team_send with agent_id "lead"' in initial
     assert "Text in a normal final response does not notify teammates" in initial

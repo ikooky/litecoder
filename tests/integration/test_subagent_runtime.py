@@ -70,7 +70,7 @@ class FactoryDouble:
 
 
 @pytest.mark.asyncio
-async def test_child_workspace_mutation_requires_explicit_task_claim(
+async def test_child_workspace_mutation_requires_active_task_assignment(
     tmp_path: Path,
 ) -> None:
     class WriteToolDouble:
@@ -102,13 +102,13 @@ async def test_child_workspace_mutation_requires_explicit_task_claim(
     assert denied.status == "denied"
     assert denied.metadata == {
         "stage": "workspace_mutation",
-        "code": "task_not_claimed",
+        "code": "task_not_assigned",
         "task_id": "task-1",
         "agent_id": "worker-1",
     }
     assert pending.owner_agent_id is None
 
-    await tasks.claim("task-1", "worker-1")
+    await tasks.assign_and_start("task-1", "worker-1")
     allowed = await executor.execute(
         ToolCall("write-2", "write_file", {}), tool_context
     )
@@ -162,7 +162,6 @@ async def test_child_receives_independent_session_and_cache() -> None:
             max_tool_calls=5,
         ),
         "call-1",
-        task_id="task-1",
     )
 
     handle = await manager.spawn(child_request, caller=lead_caller)
@@ -359,7 +358,7 @@ async def test_mutating_subagent_requires_task_and_worktree(tmp_path: Path) -> N
         "lead-session",
         ChildAuthority(
             tools=frozenset(
-                {"write_file", "task_claim", "task_complete", "task_fail"}
+                {"write_file", "task_complete", "task_fail"}
             ),
             workspace_id="workspace-1",
             permission_mode="ask",
@@ -383,7 +382,6 @@ async def test_mutating_subagent_requires_task_and_worktree(tmp_path: Path) -> N
                     "objective": "Implement the task",
                     "tools": [
                         "write_file",
-                        "task_claim",
                         "task_complete",
                         "task_fail",
                     ],
@@ -424,7 +422,7 @@ async def test_task_subagent_requires_lifecycle_tools(tmp_path: Path) -> None:
     assert captured.value.metadata == {
         "stage": "spawn_subagent",
         "code": "missing_task_tools",
-        "missing_tools": ["task_claim", "task_complete", "task_fail"],
+        "missing_tools": ["task_complete", "task_fail"],
     }
 
 
@@ -445,9 +443,18 @@ async def test_spawn_subagent_delegates_verified_worktree_workspace(
     worktrees.list = list_worktrees
     child_runtime = RuntimeDouble("child-session")
     factory = FactoryDouble(child_runtime)
-    manager = SubagentManager(factory)
+    tasks = TaskManager(TaskStore(tmp_path / "tasks"))
+    await tasks.create(
+        TaskCreate(
+            "task-1",
+            "implement",
+            "Implement the task",
+            worktree_id="binding-1",
+        )
+    )
+    manager = SubagentManager(factory, task_manager=tasks)
     delegated_tools = frozenset(
-        {"read_file", "task_claim", "task_complete", "task_fail"}
+        {"read_file", "task_complete", "task_fail"}
     )
     lead = AgentCaller(
         "lead",
@@ -466,6 +473,7 @@ async def test_spawn_subagent_delegates_verified_worktree_workspace(
         manager,
         caller_resolver=lambda context: lead,
         worktrees=worktrees,
+        task_manager=tasks,
     )
 
     result = await tool.execute(

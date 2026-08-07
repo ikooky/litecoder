@@ -287,7 +287,6 @@ async def test_real_runtime_registers_background_tools(
             "background_status",
             "todo_write",
             "task_create",
-            "task_claim",
             "spawn_subagent",
             "team_create",
             "team_send",

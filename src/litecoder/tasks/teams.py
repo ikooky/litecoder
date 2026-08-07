@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from litecoder.agent.factory import AgentRuntimeFactory
 from litecoder.tasks.message_bus import MessageBus, validate_agent_id
-from litecoder.tasks.manager import TaskManager
+from litecoder.tasks.manager import TaskManager, TaskManagerError
 from litecoder.tasks.models import TaskStatus
 from litecoder.tasks.protocols import ProtocolManager
 from litecoder.tasks.subagents import (
@@ -194,9 +194,11 @@ class TeamManager:
         return self._session_to_agent.get(session_id, session_id)
 
     def resolve_recipient(self, recipient: str) -> str:
-        """Resolve the recipient."""
+        """Resolve one active team mailbox recipient."""
         _non_empty(recipient, "recipient")
-        if recipient == "lead" or recipient in {member.agent_id for member in self.list()}:
+        if recipient == "lead" or recipient in {
+            member.agent_id for member in self.list()
+        }:
             return recipient
         session_agent_id = self._session_to_agent.get(recipient)
         if session_agent_id is not None:
@@ -210,10 +212,23 @@ class TeamManager:
             raise ValueError(
                 f"team recipient display name {recipient!r} is ambiguous"
             )
-        return matches[0] if matches else recipient
+        if matches:
+            return matches[0]
+        raise ValueError(f"team recipient {recipient!r} is unavailable")
+
+    def resolve_sender(self, sender: str) -> str:
+        """Resolve and validate one active team mailbox sender."""
+        _non_empty(sender, "sender")
+        agent_id = self._session_to_agent.get(sender, sender)
+        if agent_id == "lead" or agent_id in {
+            member.agent_id for member in self.list()
+        }:
+            return agent_id
+        raise ValueError(f"team sender {sender!r} is unavailable")
 
     async def drain_inbox(self, agent_id: str) -> tuple[TeamMessage, ...]:
         """Consume one agent mailbox through the team's authoritative bus."""
+        agent_id = self.resolve_recipient(agent_id)
         validate_agent_id(agent_id)
         bus = self.message_bus
         if bus is None:
@@ -270,6 +285,23 @@ class TeamManager:
         validate_agent_id(agent_id)
         child_request = child_request.with_agent_id(agent_id)
         runtime = await self.factory.create_child(child_request)
+        if child_request.task_id is not None:
+            if self.task_manager is None:
+                close = getattr(runtime, "close", None)
+                if callable(close):
+                    await close()
+                raise AgentCreationDenied("delegated task manager is unavailable")
+            try:
+                await self.task_manager.assign_and_start(
+                    child_request.task_id, agent_id
+                )
+            except (TaskManagerError, ValueError) as error:
+                close = getattr(runtime, "close", None)
+                if callable(close):
+                    await close()
+                raise AgentCreationDenied(
+                    "delegated task could not be assigned"
+                ) from error
         session_id = getattr(runtime, "session_id", None)
         if not isinstance(session_id, str) or not session_id.strip():
             session_id = agent_id
@@ -506,8 +538,8 @@ def _teammate_objective(member: TeamMember, objective: str) -> str:
     if task_ids:
         task_lines = (
             f'- Your delegated durable task ID is "{task_ids[0]}". '
-            "You must explicitly call task_claim for it before any workspace "
-            "mutation. The runtime will not claim it for you.\n"
+            "The runtime assigned it to you before this turn; work only within "
+            "that task and its delegated workspace.\n"
         )
     return (
         "# Team teammate contract\n\n"

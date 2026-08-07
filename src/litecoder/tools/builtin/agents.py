@@ -80,6 +80,9 @@ class SpawnSubagentTool:
         self.caller_resolver = caller_resolver
         self.worktrees = worktrees or getattr(manager.factory, "worktrees", None)
         self.task_manager = task_manager
+        bind_task_manager = getattr(manager, "bind_task_manager", None)
+        if callable(bind_task_manager):
+            bind_task_manager(task_manager)
         self.tool_registry = tool_registry
 
     async def execute(
@@ -201,7 +204,7 @@ async def _request_from_call(
             },
         )
     if task_id is not None:
-        required = {"task_claim", "task_complete", "task_fail"}
+        required = {"task_complete", "task_fail"}
         missing = sorted(required - set(tools))
         if missing:
             raise ToolFailure(

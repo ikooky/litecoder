@@ -181,7 +181,7 @@ async def test_child_permission_prompts_bubble_to_root_broker(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_child_cannot_create_more_agents_or_autonomously_claim_work() -> None:
+async def test_child_cannot_create_more_agents_or_autonomously_assign_work() -> None:
     child = _authority("child")
     request = ChildAgentRequest(
         "nested",

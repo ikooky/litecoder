@@ -58,7 +58,7 @@ def request(**overrides: object) -> ChildAgentRequest:
         "objective": "inspect the code",
         "authority": authority(tools=frozenset({"read_file"}), task_ids=frozenset({"task-1"}), max_rounds=2, max_tool_calls=4),
         "tool_call_id": "call-1",
-        "task_id": "task-1",
+        "task_id": None,
         "worktree_id": None,
     }
     values.update(overrides)
@@ -120,6 +120,17 @@ async def test_non_lead_agent_cannot_spawn_subagent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_subagent_requires_a_bound_task_manager() -> None:
+    runtime = FakeRuntime()
+    manager = SubagentManager(FakeFactory(runtime))
+
+    with pytest.raises(AgentCreationDenied, match="task manager"):
+        await manager.spawn(request(task_id="task-1"), caller=caller("lead"))
+
+    assert runtime.objectives == []
+
+
+@pytest.mark.asyncio
 async def test_lead_spawn_creates_child_and_returns_tool_result() -> None:
     runtime = FakeRuntime("child-session")
     factory = FakeFactory(runtime)
@@ -136,8 +147,8 @@ async def test_lead_spawn_creates_child_and_returns_tool_result() -> None:
     assert handle.result.metadata["agent_status"] == "completed"
     assert manager.spawn_history == [
         {
-            "agent_id": "",
-            "task_id": "task-1",
+                "agent_id": "child-session",
+            "task_id": "",
             "worktree_id": "",
             "status": "completed",
             "result_returned": 1,
@@ -151,21 +162,25 @@ async def test_lead_spawn_creates_child_and_returns_tool_result() -> None:
 
 
 @pytest.mark.asyncio
-async def test_subagent_marks_unfinished_claimed_task_failed(tmp_path: Path) -> None:
+async def test_subagent_assigns_task_before_first_turn(tmp_path: Path) -> None:
     tasks = TaskManager(TaskStore(tmp_path / "tasks"))
     await tasks.create(TaskCreate("task-1", "inspect", "inspect the code"))
 
-    class ClaimingRuntime(FakeRuntime):
+    class AssignedRuntime(FakeRuntime):
         agent_id = "child-1"
         task_manager = tasks
 
         async def run(self, objective: str) -> AgentResult:
-            await tasks.claim("task-1", self.agent_id)
+            task = await tasks.get("task-1")
+            assert task.status is TaskStatus.IN_PROGRESS
+            assert task.owner_agent_id == self.agent_id
             return await super().run(objective)
 
-    manager = SubagentManager(FakeFactory(ClaimingRuntime()))
+    manager = SubagentManager(
+        FakeFactory(AssignedRuntime()), task_manager=tasks
+    )
 
-    await manager.spawn(request(), caller=caller("lead"))
+    await manager.spawn(request(task_id="task-1"), caller=caller("lead"))
 
     task = await tasks.get("task-1")
     assert task.status is TaskStatus.FAILED

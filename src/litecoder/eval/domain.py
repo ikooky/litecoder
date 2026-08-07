@@ -177,7 +177,7 @@ class ExecutionCandidate:
                 (
                     "## Harness interruption",
                     "",
-                    "Checkpoint: after-task-claim-before-agent-turn",
+                    "Checkpoint: after-task-assignment-before-agent-turn",
                     "",
                 )
             )

@@ -52,8 +52,8 @@ class TeamCreateTool:
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Delegated tool names. Task workers need task_claim, "
-                        "task_complete, task_fail, and team_send in addition "
+                        "Delegated tool names. Task workers need task_complete, "
+                        "task_fail, and team_send in addition "
                         "to their implementation tools."
                     ),
                 },
@@ -69,8 +69,8 @@ class TeamCreateTool:
                 "task_id": {
                     "type": "string",
                     "description": (
-                        "Pending unowned durable task that the teammate must "
-                        "claim explicitly. The lead must not claim it."
+                        "Pending durable task that Harness assigns before the "
+                        "teammate starts."
                     ),
                 },
                 "worktree_id": {
@@ -99,6 +99,9 @@ class TeamCreateTool:
         self.caller_resolver = caller_resolver
         self.worktrees = worktrees or getattr(manager.factory, "worktrees", None)
         self.task_manager = task_manager
+        bind_task_manager = getattr(manager, "bind_task_manager", None)
+        if callable(bind_task_manager):
+            bind_task_manager(task_manager)
         self.tool_registry = tool_registry
 
     async def execute(
@@ -144,7 +147,7 @@ class TeamCreateTool:
                 metadata={"stage": "team_create", "code": "missing_task_worktree"},
             )
         if task_id is not None:
-            required = {"task_claim", "task_complete", "task_fail", "team_send"}
+            required = {"task_complete", "task_fail", "team_send"}
             missing = sorted(required - set(tools))
             if missing:
                 raise ToolFailure(
@@ -254,19 +257,10 @@ class TeamSendTool:
         requested_agent_id = _required_str(
             call.arguments.get("agent_id"), "agent_id"
         )
-        try:
-            agent_id = self.manager.resolve_recipient(requested_agent_id)
-        except ValueError as error:
-            raise ToolFailure(
-                "Ambiguous team recipient",
-                metadata={"agent_id": requested_agent_id},
-            ) from error
+        agent_id, sender = _resolve_mailbox_route(
+            self.manager, context, requested_agent_id
+        )
         body = _required_str(call.arguments.get("body"), "body")
-        explicit_agent_id = context.metadata.get("agent_id")
-        if isinstance(explicit_agent_id, str) and explicit_agent_id.strip():
-            sender = explicit_agent_id
-        else:
-            sender = self.manager.agent_id_for_session(context.agent_session_id)
         await self.bus.send(agent_id, TeamMessage(sender, agent_id, body))
         self.manager.record_message_sent(sender, agent_id)
         return ToolExecution.success(
@@ -305,13 +299,7 @@ class TeamReceiveTool:
         self, call: ToolCall, context: ToolContext
     ) -> ToolExecution:
         """Execute the requested tool call."""
-        explicit_agent_id = context.metadata.get("agent_id")
-        if isinstance(explicit_agent_id, str) and explicit_agent_id.strip():
-            agent_id = explicit_agent_id
-        else:
-            agent_id = self.manager.agent_id_for_session(
-                context.agent_session_id
-            )
+        agent_id = _resolve_mailbox_sender(self.manager, context)
         messages = await self.manager.drain_inbox(agent_id)
         payload = [message.to_dict() for message in messages]
         return ToolExecution.success(
@@ -346,16 +334,21 @@ class TeamRequestPlanApprovalTool:
         self, call: ToolCall, context: ToolContext
     ) -> ToolExecution:
         """Execute the requested tool call."""
-        agent_id = _required_str(call.arguments.get("agent_id"), "agent_id")
+        requested_agent_id = _required_str(
+            call.arguments.get("agent_id"), "agent_id"
+        )
         plan = call.arguments.get("plan")
         if not isinstance(plan, dict):
             raise ToolFailure(
                 "Invalid protocol arguments", metadata={"field": "plan"}
             )
+        agent_id, requester = _resolve_mailbox_route(
+            self.manager, context, requested_agent_id
+        )
         request = await self.manager.protocols.request_plan_approval(
             agent_id,
             plan,
-            requester=_agent_id(self.manager, context),
+            requester=requester,
             timeout=_optional_timeout(call.arguments.get("timeout")),
         )
         return ToolExecution.success(
@@ -396,10 +389,11 @@ class TeamRespondPlanApprovalTool:
         )
         approved = _required_bool(call.arguments.get("approved"), "approved")
         reason = _optional_str(call.arguments.get("reason"), "reason")
+        responder = _resolve_mailbox_sender(self.manager, context)
         try:
             await self.manager.protocols.respond_plan_approval(
                 request_id,
-                responder=_agent_id(self.manager, context),
+                responder=responder,
                 approved=approved,
                 reason=reason,
             )
@@ -436,12 +430,17 @@ class TeamRequestShutdownTool:
         self, call: ToolCall, context: ToolContext
     ) -> ToolExecution:
         """Execute the requested tool call."""
-        agent_id = _required_str(call.arguments.get("agent_id"), "agent_id")
+        requested_agent_id = _required_str(
+            call.arguments.get("agent_id"), "agent_id"
+        )
         reason = _optional_str(call.arguments.get("reason"), "reason")
+        agent_id, requester = _resolve_mailbox_route(
+            self.manager, context, requested_agent_id
+        )
         request = await self.manager.protocols.request_shutdown(
             agent_id,
             reason,
-            requester=_agent_id(self.manager, context),
+            requester=requester,
             timeout=_optional_timeout(call.arguments.get("timeout")),
         )
         return ToolExecution.success(
@@ -482,10 +481,11 @@ class TeamRespondShutdownTool:
         )
         approved = _required_bool(call.arguments.get("approved"), "approved")
         reason = _optional_str(call.arguments.get("reason"), "reason")
+        responder = _resolve_mailbox_sender(self.manager, context)
         try:
             await self.manager.protocols.respond_shutdown(
                 request_id,
-                responder=_agent_id(self.manager, context),
+                responder=responder,
                 approved=approved,
                 reason=reason,
             )
@@ -587,6 +587,39 @@ def _agent_id(manager: TeamManager, context: ToolContext) -> str:
     return manager.agent_id_for_session(context.agent_session_id)
 
 
+def _resolve_mailbox_sender(
+    manager: TeamManager, context: ToolContext
+) -> str:
+    """Resolve the current actor as an active team mailbox sender."""
+    try:
+        return manager.resolve_sender(_agent_id(manager, context))
+    except ValueError as error:
+        raise ToolFailure("Team mailbox access is unavailable") from error
+
+
+def _resolve_mailbox_route(
+    manager: TeamManager,
+    context: ToolContext,
+    requested_agent_id: str,
+) -> tuple[str, str]:
+    """Resolve an authorized active sender and recipient pair."""
+    try:
+        return (
+            manager.resolve_recipient(requested_agent_id),
+            manager.resolve_sender(_agent_id(manager, context)),
+        )
+    except ValueError as error:
+        reason = (
+            "Ambiguous team recipient"
+            if "ambiguous" in str(error)
+            else "Team mailbox access is unavailable"
+        )
+        raise ToolFailure(
+            reason,
+            metadata={"agent_id": requested_agent_id},
+        ) from error
+
+
 def _required_bool(value: object, field_name: str) -> bool:
     if not isinstance(value, bool):
         raise ToolFailure(
@@ -658,10 +691,10 @@ async def _worktree_binding(
         status = getattr(task.status, "value", task.status)
         if status != "pending" or task.owner_agent_id is not None:
             raise ToolFailure(
-                "Delegated task must remain pending and unowned; the lead must not claim it",
+                "Delegated task must remain pending and unassigned before delegation",
                 metadata={
-                    "stage": "task_claim",
-                    "code": "task_already_owned",
+                    "stage": "task_assignment",
+                    "code": "task_already_assigned",
                     "owner_agent_id": task.owner_agent_id or "",
                     "status": str(status),
                 },

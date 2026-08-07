@@ -10,7 +10,6 @@ from litecoder.tasks.manager import (
     TaskBlocked,
     TaskManager,
     TaskManagerError,
-    TaskNotClaimable,
     TaskNotFound,
     TaskOwnershipError,
 )
@@ -121,7 +120,7 @@ class TaskGetTool:
     """Component responsible for the task get tool."""
     spec = ToolSpec(
         "task_get",
-        "Read the latest state of one durable project task before claiming, transitioning, delegating, or relying on its ownership or dependencies.",
+        "Read the latest state of one durable project task before transitioning, delegating, or relying on its ownership or dependencies.",
         {
             "type": "object",
             "properties": {"id": _TASK_ID_SCHEMA},
@@ -173,8 +172,6 @@ class _TaskTransitionTool:
             raise ToolFailure(
                 "Task is blocked", metadata={"blocking_task_ids": error.blocking_ids}
             ) from None
-        except TaskNotClaimable:
-            raise ToolFailure("Task cannot be claimed") from None
         except TaskOwnershipError:
             raise ToolFailure("Task is not owned by this agent") from None
         except InvalidTaskTransition:
@@ -184,17 +181,6 @@ class _TaskTransitionTool:
         except ValueError:
             raise _invalid_arguments("id") from None
         return _task_success(self.description, updated)
-
-
-class TaskClaimTool(_TaskTransitionTool):
-    """Component responsible for the task claim tool."""
-    action = "claim"
-    description = "Claimed task."
-    spec = ToolSpec(
-        "task_claim", "Claim an unblocked pending durable task before any task-owned workspace mutation. Do not claim work assigned for another teammate.",
-        {"type": "object", "properties": {"id": _TASK_ID_SCHEMA}, "required": ["id"], "additionalProperties": False},
-        False, concurrency="exclusive", permission_risk="safe", dedupe_policy="none",
-    )
 
 
 class TaskCompleteTool(_TaskTransitionTool):
@@ -236,7 +222,7 @@ def register_task_tools(registry: ToolRegistry, manager: TaskManager) -> None:
         raise ValueError("registry is invalid")
     registry.register_many((
         TaskCreateTool(manager), TaskListTool(manager), TaskGetTool(manager),
-        TaskClaimTool(manager), TaskCompleteTool(manager), TaskFailTool(manager),
+        TaskCompleteTool(manager), TaskFailTool(manager),
         TaskCancelTool(manager),
     ))
 
